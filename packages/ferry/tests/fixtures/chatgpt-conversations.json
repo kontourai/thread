@@ -1,0 +1,123 @@
+[
+  {
+    "title": "Sourdough starter help",
+    "create_time": 1754040000.123,
+    "update_time": 1754040300.456,
+    "mapping": {
+      "root": {
+        "id": "root",
+        "message": null,
+        "parent": null,
+        "children": ["node-system"]
+      },
+      "node-system": {
+        "id": "node-system",
+        "message": {
+          "id": "msg-system",
+          "author": { "role": "system", "name": null, "metadata": {} },
+          "create_time": null,
+          "content": { "content_type": "text", "parts": [""] },
+          "status": "finished_successfully",
+          "end_turn": true,
+          "weight": 0,
+          "metadata": { "is_visually_hidden_from_conversation": true },
+          "recipient": "all"
+        },
+        "parent": "root",
+        "children": ["node-user-1"]
+      },
+      "node-user-1": {
+        "id": "node-user-1",
+        "message": {
+          "id": "msg-user-1",
+          "author": { "role": "user", "name": null, "metadata": {} },
+          "create_time": 1754040001.0,
+          "content": {
+            "content_type": "text",
+            "parts": ["My starter smells like acetone, is it dead?"]
+          },
+          "status": "finished_successfully",
+          "metadata": {},
+          "recipient": "all"
+        },
+        "parent": "node-system",
+        "children": ["node-asst-old", "node-asst-thoughts"]
+      },
+      "node-asst-old": {
+        "id": "node-asst-old",
+        "message": {
+          "id": "msg-asst-old",
+          "author": { "role": "assistant", "name": null, "metadata": {} },
+          "create_time": 1754040010.0,
+          "content": {
+            "content_type": "text",
+            "parts": ["ABANDONED BRANCH: this earlier answer was regenerated away."]
+          },
+          "status": "finished_successfully",
+          "metadata": { "model_slug": "gpt-4o" },
+          "recipient": "all"
+        },
+        "parent": "node-user-1",
+        "children": []
+      },
+      "node-asst-thoughts": {
+        "id": "node-asst-thoughts",
+        "message": {
+          "id": "msg-asst-thoughts",
+          "author": { "role": "assistant", "name": null, "metadata": {} },
+          "create_time": 1754040020.0,
+          "content": {
+            "content_type": "thoughts",
+            "thoughts": [
+              {
+                "summary": "Diagnosing the smell",
+                "content": "Acetone smell means the starter is hungry, not dead."
+              }
+            ]
+          },
+          "status": "finished_successfully",
+          "metadata": { "model_slug": "gpt-5" },
+          "recipient": "all"
+        },
+        "parent": "node-user-1",
+        "children": ["node-asst-final"]
+      },
+      "node-asst-final": {
+        "id": "node-asst-final",
+        "message": {
+          "id": "msg-asst-final",
+          "author": { "role": "assistant", "name": null, "metadata": {} },
+          "create_time": 1754040021.0,
+          "content": {
+            "content_type": "text",
+            "parts": ["It's hungry, not dead — feed it twice daily for three days."]
+          },
+          "status": "finished_successfully",
+          "metadata": { "model_slug": "gpt-5" },
+          "recipient": "all"
+        },
+        "parent": "node-asst-thoughts",
+        "children": []
+      }
+    },
+    "current_node": "node-asst-final",
+    "conversation_id": "conv-0001",
+    "id": "conv-0001"
+  },
+  {
+    "title": "Empty conversation that yields no thread",
+    "create_time": 1754050000.0,
+    "update_time": 1754050000.0,
+    "mapping": {
+      "solo-root": {
+        "id": "solo-root",
+        "message": null,
+        "parent": null,
+        "children": []
+      }
+    },
+    "current_node": "solo-root",
+    "conversation_id": "conv-0002",
+    "id": "conv-0002"
+  }
+]

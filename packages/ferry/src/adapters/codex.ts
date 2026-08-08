@@ -1,0 +1,241 @@
+/**
+ * Import from Codex CLI rollout transcripts.
+ * Source: ~/.codex/sessions/<yyyy>/<mm>/<dd>/rollout-*.jsonl
+ *
+ * Each line is `{timestamp: ISO string, type, payload}`. Conversation content
+ * lives in `type: "response_item"` payloads:
+ * - `message` — user/assistant text (`input_text` / `output_text` parts)
+ * - `reasoning` — summary array (+ opaque `encrypted_content`, not imported)
+ * - `function_call` / `custom_tool_call` — tool invocations
+ * - `function_call_output` / `custom_tool_call_output` — tool results
+ * `session_meta` carries the session id, cwd and CLI version; `turn_context`
+ * carries the active model.
+ *
+ * Consecutive assistant-side items (reasoning, text, tool calls) are folded
+ * into one assistant message per turn, mirroring how the Responses API groups
+ * output items.
+ *
+ * Known limitations (deliberate):
+ * - `agent_message` items (inter-agent traffic) and `tool_search_*` items are
+ *   skipped.
+ * - `reasoning.encrypted_content` is dropped; only summary text is kept.
+ */
+
+import { z } from "zod";
+import type {
+  AssistantContent,
+  ContentPart,
+  Message,
+  Thread,
+  ThreadMetadata,
+} from "@kontourai/thread";
+import { THREAD_SCHEMA_VERSION } from "@kontourai/thread";
+import { asRecord, parseTimestamp, toLines, type JsonlInput } from "./shared.js";
+
+const RolloutLine = z
+  .object({
+    type: z.string(),
+    timestamp: z.union([z.string(), z.number()]).optional(),
+    payload: z.unknown(),
+  })
+  .passthrough();
+
+export function importFromCodex(jsonlContent: JsonlInput): Thread {
+  let sessionId: string | undefined;
+  let cwd: string | undefined;
+  let cliVersion: string | undefined;
+  let provider: string | undefined;
+  let model: string | undefined;
+
+  interface Item {
+    timestamp: number | undefined;
+    payload: Record<string, unknown>;
+  }
+  const items: Item[] = [];
+
+  for (const line of toLines(jsonlContent)) {
+    if (!line.trim()) continue;
+    let raw: unknown;
+    try {
+      raw = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const parsed = RolloutLine.safeParse(raw);
+    if (!parsed.success) continue;
+    const record = parsed.data;
+    const payload = asRecord(record.payload);
+    if (!payload) continue;
+
+    if (record.type === "session_meta") {
+      if (typeof payload["id"] === "string") sessionId ??= payload["id"];
+      if (typeof payload["cwd"] === "string") cwd ??= payload["cwd"];
+      if (typeof payload["cli_version"] === "string") cliVersion ??= payload["cli_version"];
+      if (typeof payload["model_provider"] === "string") provider ??= payload["model_provider"];
+      continue;
+    }
+    if (record.type === "turn_context") {
+      if (typeof payload["model"] === "string") model ??= payload["model"];
+      continue;
+    }
+    if (record.type !== "response_item") continue;
+    items.push({ timestamp: parseTimestamp(record.timestamp), payload });
+  }
+
+  if (items.length === 0) {
+    throw new Error("No Codex response items found in input");
+  }
+
+  const threadId = sessionId ?? "codex-session";
+  const messages: Message[] = [];
+  let syntheticId = 0;
+  const nextId = (): string => `${threadId}:${++syntheticId}`;
+
+  let pending: { content: AssistantContent[]; timestamp: number | undefined } | null = null;
+  const flushPending = (): void => {
+    if (pending && pending.content.length > 0) {
+      messages.push({
+        id: nextId(),
+        threadId,
+        role: "assistant",
+        timestamp: pending.timestamp ?? fallbackTimestamp(messages),
+        content: pending.content,
+        model,
+        provider,
+      });
+    }
+    pending = null;
+  };
+  const appendAssistant = (part: AssistantContent, timestamp: number | undefined): void => {
+    pending ??= { content: [], timestamp };
+    pending.timestamp ??= timestamp;
+    pending.content.push(part);
+  };
+
+  for (const { timestamp, payload } of items) {
+    const type = payload["type"];
+
+    if (type === "message") {
+      const role = payload["role"];
+      const parts = extractMessageParts(payload["content"]);
+      if (parts.length === 0) continue;
+      if (role === "assistant") {
+        for (const part of parts) {
+          if (part.type === "text") appendAssistant({ type: "text", text: part.text }, timestamp);
+          else if (part.type === "image") appendAssistant({ type: "image", image: part }, timestamp);
+        }
+      } else {
+        flushPending();
+        messages.push({
+          id: nextId(),
+          threadId,
+          role: role === "system" ? "system" : "user",
+          timestamp: timestamp ?? fallbackTimestamp(messages),
+          content: parts,
+        });
+      }
+    } else if (type === "reasoning") {
+      const summary = Array.isArray(payload["summary"]) ? payload["summary"] : [];
+      const texts = summary
+        .map((s) => asRecord(s))
+        .filter((s): s is Record<string, unknown> => s !== undefined)
+        .map((s) => s["text"])
+        .filter((t): t is string => typeof t === "string" && t.length > 0);
+      if (texts.length > 0) {
+        appendAssistant(
+          { type: "reasoning", reasoning: { type: "reasoning", text: texts.join("\n") } },
+          timestamp,
+        );
+      }
+    } else if (type === "function_call" || type === "custom_tool_call") {
+      const name = typeof payload["name"] === "string" ? payload["name"] : "unknown";
+      const callId =
+        typeof payload["call_id"] === "string"
+          ? payload["call_id"]
+          : typeof payload["id"] === "string"
+            ? payload["id"]
+            : nextId();
+      const rawArguments =
+        typeof payload["arguments"] === "string"
+          ? payload["arguments"]
+          : typeof payload["input"] === "string"
+            ? payload["input"]
+            : "{}";
+      let parsedArguments: Record<string, unknown> | undefined;
+      if (type === "function_call") {
+        try {
+          parsedArguments = asRecord(JSON.parse(rawArguments));
+        } catch {
+          parsedArguments = undefined;
+        }
+      }
+      appendAssistant(
+        {
+          type: "tool_call",
+          toolCall: { id: callId, name, arguments: rawArguments, parsedArguments },
+        },
+        timestamp,
+      );
+    } else if (type === "function_call_output" || type === "custom_tool_call_output") {
+      flushPending();
+      const callId = typeof payload["call_id"] === "string" ? payload["call_id"] : nextId();
+      const output = extractOutputText(payload["output"]);
+      messages.push({
+        id: nextId(),
+        threadId,
+        role: "tool",
+        timestamp: timestamp ?? fallbackTimestamp(messages),
+        toolResults: [
+          { toolCallId: callId, name: "", content: [{ type: "text", text: output }] },
+        ],
+      });
+    }
+    // agent_message, tool_search_call/_output and unknown types are skipped.
+  }
+  flushPending();
+
+  if (messages.length === 0) {
+    throw new Error("Codex input contained no importable messages");
+  }
+
+  const metadata: ThreadMetadata = {
+    source: "codex",
+    sourceVersion: cliVersion,
+    cwd,
+  };
+
+  return {
+    schemaVersion: THREAD_SCHEMA_VERSION,
+    id: threadId,
+    messages,
+    metadata,
+    createdAt: messages[0]?.timestamp ?? Date.now(),
+    updatedAt: messages[messages.length - 1]?.timestamp ?? Date.now(),
+  };
+}
+
+function extractMessageParts(content: unknown): ContentPart[] {
+  const parts: ContentPart[] = [];
+  if (!Array.isArray(content)) return parts;
+  for (const item of content) {
+    const part = asRecord(item);
+    if (!part) continue;
+    const type = part["type"];
+    if ((type === "input_text" || type === "output_text") && typeof part["text"] === "string") {
+      parts.push({ type: "text", text: part["text"] });
+    } else if (type === "input_image" && typeof part["image_url"] === "string") {
+      parts.push({ type: "image", data: part["image_url"], mediaType: "image/*" });
+    }
+  }
+  return parts;
+}
+
+/** Tool outputs are strings, occasionally JSON-wrapped as {output, metadata}. */
+function extractOutputText(output: unknown): string {
+  if (typeof output !== "string") return "";
+  return output;
+}
+
+function fallbackTimestamp(messages: Message[]): number {
+  return messages[messages.length - 1]?.timestamp ?? Date.now();
+}

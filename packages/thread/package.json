@@ -1,0 +1,49 @@
+{
+  "name": "@kontourai/thread",
+  "version": "0.1.0",
+  "description": "Canonical AI conversation schema — a portable message format for agent threads",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "files": [
+    "dist/src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && vitest run"
+  },
+  "keywords": [
+    "ai",
+    "conversation",
+    "thread",
+    "schema",
+    "llm",
+    "agent"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kontourai/thread.git",
+    "directory": "packages/thread"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0",
+    "vitest": "^3.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

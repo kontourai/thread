@@ -1,0 +1,74 @@
+{
+  "info": {
+    "id": "ses_0abc111defV0Example00001",
+    "projectID": "prj_example",
+    "directory": "/Users/dev/example",
+    "title": "Clean up merged worktrees",
+    "version": "1.18.11",
+    "time": { "created": 1785432240000, "updated": 1785432299000 }
+  },
+  "messages": [
+    {
+      "info": {
+        "id": "msg_user_0001",
+        "role": "user",
+        "time": { "created": 1785432240605 },
+        "agent": "build",
+        "model": { "providerID": "zai-coding-plan", "modelID": "glm-5.2" },
+        "summary": { "diffs": [] }
+      },
+      "parts": [
+        { "id": "prt_0001", "type": "text", "text": "Which worktrees are safe to delete?" }
+      ]
+    },
+    {
+      "info": {
+        "id": "msg_asst_0001",
+        "parentID": "msg_user_0001",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "path": { "cwd": "/Users/dev/example", "root": "/" },
+        "cost": 0,
+        "tokens": {
+          "total": 31671,
+          "input": 31405,
+          "output": 83,
+          "reasoning": 55,
+          "cache": { "write": 0, "read": 128 }
+        },
+        "modelID": "glm-5.2",
+        "providerID": "zai-coding-plan",
+        "time": { "created": 1785432240622, "completed": 1785432250000 }
+      },
+      "parts": [
+        { "id": "prt_0002", "type": "step-start" },
+        {
+          "id": "prt_0003",
+          "type": "reasoning",
+          "text": "List worktrees first, then check merge status."
+        },
+        {
+          "id": "prt_0004",
+          "type": "text",
+          "text": "Let me check which branches are merged.",
+          "time": { "start": 1785432249600, "end": 1785432249619 }
+        },
+        {
+          "id": "prt_0005",
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_06d8469b26674bf7a0f80d15",
+          "state": {
+            "status": "completed",
+            "input": { "command": "git worktree list" },
+            "output": "/Users/dev/example  abc1234 [main]",
+            "title": "git worktree list",
+            "time": { "start": 1785432249700, "end": 1785432249900 }
+          }
+        },
+        { "id": "prt_0006", "type": "step-finish" }
+      ]
+    }
+  ]
+}

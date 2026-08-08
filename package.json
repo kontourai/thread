@@ -1,0 +1,18 @@
+{
+  "name": "@kontourai/thread-workspace",
+  "private": true,
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "packages/thread",
+    "packages/ferry"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "typecheck": "npm run typecheck --workspaces",
+    "test": "npm run test --workspaces",
+    "verify": "npm run build && npm run typecheck && npm run test"
+  }
+}

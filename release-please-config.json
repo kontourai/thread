@@ -1,0 +1,24 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "node",
+  "changelog-sections": [
+    { "type": "feat", "section": "Features" },
+    { "type": "fix", "section": "Fixes" },
+    { "type": "docs", "section": "Documentation" },
+    { "type": "perf", "section": "Performance" },
+    { "type": "refactor", "section": "Refactoring" },
+    { "type": "chore", "section": "Maintenance", "hidden": true }
+  ],
+  "packages": {
+    "packages/thread": {
+      "component": "thread",
+      "package-name": "@kontourai/thread",
+      "include-component-in-tag": true
+    },
+    "packages/ferry": {
+      "component": "ferry",
+      "package-name": "@kontourai/ferry",
+      "include-component-in-tag": true
+    }
+  }
+}
