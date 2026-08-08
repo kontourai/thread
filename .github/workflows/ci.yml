@@ -15,7 +15,10 @@ jobs:
       contents: read
 
   verify:
-    runs-on: ubuntu-latest
+    # Org-hosted runners are billing-gated; the self-hosted fleet carries CI
+    # (same pattern as sibling repos). Requires this workflow on the
+    # "Kontour Build Fleet" runner group's allow-list.
+    runs-on: [self-hosted, Linux, X64, fast-feedback]
     strategy:
       fail-fast: false
       matrix:
@@ -28,7 +31,6 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node-version }}
-          cache: npm
 
       - name: Install
         run: npm ci
