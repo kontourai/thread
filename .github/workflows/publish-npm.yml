@@ -1,0 +1,91 @@
+name: Publish NPM
+
+on:
+  push:
+    tags:
+      - 'thread-v*'
+      - 'ferry-v*'
+  workflow_dispatch:
+
+# Serialize publish runs so a duplicate trigger cannot race: the second run
+# waits, then the "Check Published Version" step sees the version already on
+# npm and skips — instead of E403'ing on a double publish.
+concurrency:
+  group: publish-npm
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    # Only component tags publish; a stray dispatch on a branch just verifies.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: Install
+        run: npm ci --no-fund --no-audit
+
+      - name: Verify
+        run: npm run verify
+
+      - name: Resolve Component From Tag
+        id: component
+        run: |
+          case "${GITHUB_REF_NAME}" in
+            thread-v*) echo "workspace=packages/thread" >> "$GITHUB_OUTPUT"; echo "version=${GITHUB_REF_NAME#thread-v}" >> "$GITHUB_OUTPUT" ;;
+            ferry-v*)  echo "workspace=packages/ferry"  >> "$GITHUB_OUTPUT"; echo "version=${GITHUB_REF_NAME#ferry-v}"  >> "$GITHUB_OUTPUT" ;;
+            *) echo "Not a component tag (${GITHUB_REF_NAME}); nothing to publish." ; echo "workspace=" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Verify Tag Matches Package Version
+        if: steps.component.outputs.workspace != ''
+        run: |
+          WS="${{ steps.component.outputs.workspace }}"
+          PACKAGE_VERSION=$(node -p "JSON.parse(require('node:fs').readFileSync('$WS/package.json', 'utf8')).version")
+          if [ "${PACKAGE_VERSION}" != "${{ steps.component.outputs.version }}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match $WS version ${PACKAGE_VERSION}" >&2
+            exit 1
+          fi
+
+      - name: Verify Tagged Commit Is On Main
+        if: steps.component.outputs.workspace != ''
+        run: |
+          git fetch origin main --depth=1
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" "FETCH_HEAD"; then
+            echo "Tagged commit ${GITHUB_SHA} is not reachable from the fetched origin/main tip" >&2
+            exit 1
+          fi
+
+      - name: Check Published Version
+        if: steps.component.outputs.workspace != ''
+        id: published
+        run: |
+          WS="${{ steps.component.outputs.workspace }}"
+          PACKAGE_NAME=$(node -p "JSON.parse(require('node:fs').readFileSync('$WS/package.json', 'utf8')).name")
+          PACKAGE_VERSION=$(node -p "JSON.parse(require('node:fs').readFileSync('$WS/package.json', 'utf8')).version")
+          if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version >/dev/null 2>&1; then
+            echo "published=true" >> "${GITHUB_OUTPUT}"
+            echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is already published; skipping npm publish."
+          else
+            echo "published=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Publish
+        if: steps.component.outputs.workspace != '' && steps.published.outputs.published != 'true'
+        run: npm publish --access public --provenance -w ${{ steps.component.outputs.workspace }}
