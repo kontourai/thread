@@ -7,7 +7,9 @@ import { threadFromJson, threadToJson } from "@kontourai/thread";
 import { importFromChatGPTExport } from "./adapters/chatgpt-export.js";
 import { importFromClaudeCode } from "./adapters/claude-code.js";
 import { importFromCodex } from "./adapters/codex.js";
+import { importFromKiro } from "./adapters/kiro.js";
 import { importFromOpenCode } from "./adapters/opencode.js";
+import { importFromPi } from "./adapters/pi.js";
 import {
   exportToAnthropicMessages,
   extractSystemPrompt,
@@ -21,6 +23,8 @@ export const INPUT_FORMATS: readonly InputFormat[] = [
   "claude-code",
   "codex",
   "opencode",
+  "kiro",
+  "pi",
   "chatgpt-export",
   "thread",
 ];
@@ -34,19 +38,32 @@ export const OUTPUT_FORMATS = [
 ] as const;
 export type OutputFormat = (typeof OUTPUT_FORMATS)[number];
 
+export interface ImportOptions {
+  /** Receives warnings about skipped/unparseable records. */
+  onWarn?: (message: string) => void;
+  /** Thread id for formats whose transcript does not carry one (kiro). */
+  sessionId?: string;
+}
+
 export function importThreads(
   content: string | readonly string[],
   format: InputFormat,
+  options: ImportOptions = {},
 ): Thread[] {
+  const { onWarn } = options;
   switch (format) {
     case "claude-code":
-      return [importFromClaudeCode(content)];
+      return [importFromClaudeCode(content, { onWarn })];
     case "codex":
-      return [importFromCodex(content)];
+      return [importFromCodex(content, { onWarn })];
     case "opencode":
       return [importFromOpenCode(requireString(content, format))];
+    case "kiro":
+      return [importFromKiro(content, { onWarn, sessionId: options.sessionId })];
+    case "pi":
+      return [importFromPi(content, { onWarn })];
     case "chatgpt-export":
-      return importFromChatGPTExport(requireString(content, format));
+      return importFromChatGPTExport(requireString(content, format), { onWarn });
     case "thread":
       return [threadFromJson(requireString(content, format))];
   }

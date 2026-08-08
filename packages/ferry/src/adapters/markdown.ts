@@ -15,6 +15,12 @@ export interface MarkdownOptions {
 
 const escapeYaml = (value: string): string => JSON.stringify(value);
 
+/** A fence longer than any backtick run in the content, so tool output containing ``` cannot break out. */
+const fenceFor = (content: string): string => {
+  const longest = content.match(/`+/g)?.reduce((max, run) => Math.max(max, run.length), 0) ?? 0;
+  return "`".repeat(Math.max(3, longest + 1));
+};
+
 export function exportToMarkdown(thread: Thread, options: MarkdownOptions = {}): string {
   const {
     includeMetadata = true,
@@ -70,7 +76,8 @@ export function exportToMarkdown(thread: Thread, options: MarkdownOptions = {}):
           }
         } else if (part.type === "tool_call" && includeToolCalls) {
           lines.push(`**→ ${part.toolCall.name}**`, "");
-          lines.push("```json", part.toolCall.arguments, "```", "");
+          const fence = fenceFor(part.toolCall.arguments);
+          lines.push(`${fence}json`, part.toolCall.arguments, fence, "");
         } else if (part.type === "image") {
           lines.push(`*[image: ${part.image.mediaType}]*`, "");
         }
@@ -87,7 +94,8 @@ export function exportToMarkdown(thread: Thread, options: MarkdownOptions = {}):
           text.length > maxToolResultLength
             ? `${text.slice(0, maxToolResultLength)}\n… (${text.length - maxToolResultLength} more characters)`
             : text;
-        lines.push("```", truncated, "```", "");
+        const fence = fenceFor(truncated);
+        lines.push(fence, truncated, fence, "");
       }
     }
   }

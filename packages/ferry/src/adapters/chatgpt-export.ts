@@ -26,9 +26,12 @@ import type {
 import { THREAD_SCHEMA_VERSION } from "@kontourai/thread";
 import { asRecord } from "./shared.js";
 
+// Field-level .catch() keeps one malformed node from silently deleting the
+// whole conversation: a bad message degrades to null, bad links degrade to
+// no-links, and the rest of the tree still imports.
 const MappingNode = z
   .object({
-    id: z.string(),
+    id: z.string().optional(),
     message: z
       .object({
         id: z.string(),
@@ -38,9 +41,10 @@ const MappingNode = z
         metadata: z.record(z.unknown()).optional(),
       })
       .passthrough()
-      .nullable(),
-    parent: z.string().nullable(),
-    children: z.array(z.string()),
+      .nullable()
+      .catch(null),
+    parent: z.string().nullable().catch(null),
+    children: z.array(z.string()).catch([]),
   })
   .passthrough();
 
@@ -87,14 +91,26 @@ function textFromParts(parts: unknown): string[] {
   return parts.filter((p): p is string => typeof p === "string" && p.length > 0);
 }
 
-export function importFromChatGPTExport(jsonContent: string): Thread[] {
+export interface ChatGPTImportOptions {
+  /** Called with a summary of skipped conversations, if any. */
+  onWarn?: (message: string) => void;
+}
+
+export function importFromChatGPTExport(
+  jsonContent: string,
+  options: ChatGPTImportOptions = {},
+): Thread[] {
   const raw: unknown = JSON.parse(jsonContent);
   const candidates = Array.isArray(raw) ? raw : [raw];
   const threads: Thread[] = [];
+  let skippedConversations = 0;
 
   for (const candidate of candidates) {
     const parsed = Conversation.safeParse(candidate);
-    if (!parsed.success) continue;
+    if (!parsed.success) {
+      skippedConversations += 1;
+      continue;
+    }
     const conversation = parsed.data;
     const threadId =
       conversation.id ?? conversation.conversation_id ?? `chatgpt-${threads.length + 1}`;
@@ -185,5 +201,10 @@ export function importFromChatGPTExport(jsonContent: string): Thread[] {
     });
   }
 
+  if (skippedConversations > 0) {
+    options.onWarn?.(
+      `chatgpt-export: skipped ${skippedConversations} conversation(s) that did not match the export shape`,
+    );
+  }
   return threads;
 }

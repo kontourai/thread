@@ -45,13 +45,16 @@ const body = exportToAnthropicMessages(thread);
 ## Formats
 
 Input: `claude-code` (session JSONL), `codex` (rollout JSONL), `opencode`
-(`opencode export` JSON), `chatgpt-export` (`conversations.json`), `thread`.
+(`opencode export` JSON), `kiro` (CLI session JSONL), `pi` (session JSONL),
+`chatgpt-export` (`conversations.json`), `thread`.
 
 Output: `thread` (canonical JSON), `openai-chat`, `anthropic-messages`,
 `gemini`, `markdown`.
 
 Each adapter documents its fidelity limits (what a format cannot represent) in
-its source header — nothing is silently invented.
+its source header, and importers report skipped/unparseable records through a
+warning callback (surfaced on stderr by the CLI) instead of losing them
+silently.
 
 ## Development
 

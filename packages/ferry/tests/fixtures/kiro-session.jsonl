@@ -1,0 +1,6 @@
+{"version":"v1","kind":"Prompt","data":{"message_id":"a40cc627-1e66-420b-9c51-8acf170c0aaa","content":[{"kind":"text","data":"Which tests are flaky?"}],"meta":{"timestamp":1786067801}}}
+{"version":"v1","kind":"AssistantMessage","data":{"message_id":"4c138cfb-78ba-4061-8ac5-53bb5c360bbb","content":[{"kind":"thinking","data":{"text":"Check the CI history first.","signature":"CAIS9kirosig"}},{"kind":"text","data":"Let me look at recent runs."},{"kind":"toolUse","data":{"toolUseId":"toolu_bdrk_01Fixture000001","name":"shell","input":{"command":"ls tests"}}}]}}
+{"version":"v1","kind":"ToolResults","data":{"message_id":"ed08a30a-7d48-4f99-aa88-d9bbb5e4cccc","content":[{"kind":"toolResult","data":{"toolUseId":"toolu_bdrk_01Fixture000001","content":[{"kind":"json","data":{"exit_status":"exit status: 0","stdout":"retry.test.ts"}}],"status":"success"}}],"results":[]}}
+{"version":"v1","kind":"Compaction","data":{"summary":"# Context Window Checkpoint SHOULD NOT IMPORT","strategy":{"message_pairs_to_exclude":2},"messages_snapshot":[{"id":"x","role":"user","content":[{"kind":"text","data":"snapshot duplicate SHOULD NOT IMPORT"}]}]}}
+this line is corrupt and must be tolerated
+{"version":"v1","kind":"AssistantMessage","data":{"message_id":"9f138cfb-78ba-4061-8ac5-53bb5c360ddd","content":[{"kind":"text","data":"Only retry.test.ts is flaky."}]}}

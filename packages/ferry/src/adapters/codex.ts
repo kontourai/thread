@@ -30,7 +30,7 @@ import type {
   ThreadMetadata,
 } from "@kontourai/thread";
 import { THREAD_SCHEMA_VERSION } from "@kontourai/thread";
-import { asRecord, parseTimestamp, toLines, type JsonlInput } from "./shared.js";
+import { asRecord, parseTimestamp, toLines, tryParseJson, type JsonlInput } from "./shared.js";
 
 const RolloutLine = z
   .object({
@@ -40,16 +40,28 @@ const RolloutLine = z
   })
   .passthrough();
 
-export function importFromCodex(jsonlContent: JsonlInput): Thread {
+export interface CodexImportOptions {
+  /** Called with a summary of skipped/unparseable records, if any. */
+  onWarn?: (message: string) => void;
+}
+
+export function importFromCodex(
+  jsonlContent: JsonlInput,
+  options: CodexImportOptions = {},
+): Thread {
   let sessionId: string | undefined;
   let cwd: string | undefined;
   let cliVersion: string | undefined;
   let provider: string | undefined;
-  let model: string | undefined;
+  // Mid-session /model switches arrive as later turn_context lines, so each
+  // response item carries the model that was active when it was emitted.
+  let currentModel: string | undefined;
+  let skippedLines = 0;
 
   interface Item {
     timestamp: number | undefined;
     payload: Record<string, unknown>;
+    model: string | undefined;
   }
   const items: Item[] = [];
 
@@ -59,10 +71,14 @@ export function importFromCodex(jsonlContent: JsonlInput): Thread {
     try {
       raw = JSON.parse(line);
     } catch {
+      skippedLines += 1;
       continue;
     }
     const parsed = RolloutLine.safeParse(raw);
-    if (!parsed.success) continue;
+    if (!parsed.success) {
+      skippedLines += 1;
+      continue;
+    }
     const record = parsed.data;
     const payload = asRecord(record.payload);
     if (!payload) continue;
@@ -75,13 +91,16 @@ export function importFromCodex(jsonlContent: JsonlInput): Thread {
       continue;
     }
     if (record.type === "turn_context") {
-      if (typeof payload["model"] === "string") model ??= payload["model"];
+      if (typeof payload["model"] === "string") currentModel = payload["model"];
       continue;
     }
     if (record.type !== "response_item") continue;
-    items.push({ timestamp: parseTimestamp(record.timestamp), payload });
+    items.push({ timestamp: parseTimestamp(record.timestamp), payload, model: currentModel });
   }
 
+  if (skippedLines > 0) {
+    options.onWarn?.(`codex: skipped ${skippedLines} unparseable line(s)`);
+  }
   if (items.length === 0) {
     throw new Error("No Codex response items found in input");
   }
@@ -91,7 +110,11 @@ export function importFromCodex(jsonlContent: JsonlInput): Thread {
   let syntheticId = 0;
   const nextId = (): string => `${threadId}:${++syntheticId}`;
 
-  let pending: { content: AssistantContent[]; timestamp: number | undefined } | null = null;
+  let pending: {
+    content: AssistantContent[];
+    timestamp: number | undefined;
+    model: string | undefined;
+  } | null = null;
   const flushPending = (): void => {
     if (pending && pending.content.length > 0) {
       messages.push({
@@ -100,19 +123,24 @@ export function importFromCodex(jsonlContent: JsonlInput): Thread {
         role: "assistant",
         timestamp: pending.timestamp ?? fallbackTimestamp(messages),
         content: pending.content,
-        model,
+        model: pending.model,
         provider,
       });
     }
     pending = null;
   };
-  const appendAssistant = (part: AssistantContent, timestamp: number | undefined): void => {
-    pending ??= { content: [], timestamp };
+  const appendAssistant = (
+    part: AssistantContent,
+    timestamp: number | undefined,
+    model: string | undefined,
+  ): void => {
+    pending ??= { content: [], timestamp, model };
     pending.timestamp ??= timestamp;
+    pending.model ??= model;
     pending.content.push(part);
   };
 
-  for (const { timestamp, payload } of items) {
+  for (const { timestamp, payload, model } of items) {
     const type = payload["type"];
 
     if (type === "message") {
@@ -121,8 +149,11 @@ export function importFromCodex(jsonlContent: JsonlInput): Thread {
       if (parts.length === 0) continue;
       if (role === "assistant") {
         for (const part of parts) {
-          if (part.type === "text") appendAssistant({ type: "text", text: part.text }, timestamp);
-          else if (part.type === "image") appendAssistant({ type: "image", image: part }, timestamp);
+          if (part.type === "text") {
+            appendAssistant({ type: "text", text: part.text }, timestamp, model);
+          } else if (part.type === "image") {
+            appendAssistant({ type: "image", image: part }, timestamp, model);
+          }
         }
       } else {
         flushPending();
@@ -145,6 +176,7 @@ export function importFromCodex(jsonlContent: JsonlInput): Thread {
         appendAssistant(
           { type: "reasoning", reasoning: { type: "reasoning", text: texts.join("\n") } },
           timestamp,
+          model,
         );
       }
     } else if (type === "function_call" || type === "custom_tool_call") {
@@ -175,6 +207,7 @@ export function importFromCodex(jsonlContent: JsonlInput): Thread {
           toolCall: { id: callId, name, arguments: rawArguments, parsedArguments },
         },
         timestamp,
+        model,
       );
     } else if (type === "function_call_output" || type === "custom_tool_call_output") {
       flushPending();
@@ -230,9 +263,19 @@ function extractMessageParts(content: unknown): ContentPart[] {
   return parts;
 }
 
-/** Tool outputs are strings, occasionally JSON-wrapped as {output, metadata}. */
+/**
+ * Tool outputs are usually strings, occasionally wrapped as {output, metadata}
+ * — either as an actual object or JSON-encoded into the string. The wrapper's
+ * text is what a reader wants; its metadata sibling is dropped.
+ */
 function extractOutputText(output: unknown): string {
+  const record = asRecord(output);
+  if (record && typeof record["output"] === "string") return record["output"];
   if (typeof output !== "string") return "";
+  if (output.startsWith("{")) {
+    const parsed = asRecord(tryParseJson(output));
+    if (parsed && typeof parsed["output"] === "string") return parsed["output"];
+  }
   return output;
 }
 

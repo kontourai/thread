@@ -35,6 +35,19 @@ export function exportToGemini(thread: Thread): GeminiContent[] {
   /** callId → tool name, so results can be paired by name. */
   const callNames = new Map<string, string>();
 
+  // Merge consecutive same-role contents: tool responses ride in `user`
+  // contents, so a tool message followed by a user message must fold into
+  // one `user` entry to keep the user/model alternation the API expects.
+  const push = (role: "user" | "model", parts: GeminiPart[]): void => {
+    if (parts.length === 0) return;
+    const previous = contents[contents.length - 1];
+    if (previous && previous.role === role) {
+      previous.parts.push(...parts);
+    } else {
+      contents.push({ role, parts });
+    }
+  };
+
   for (const msg of thread.messages) {
     if (msg.role === "system") continue; // carried via extractSystemInstruction
 
@@ -56,7 +69,7 @@ export function exportToGemini(thread: Thread): GeminiContent[] {
           parts.push({ text: `[file: ${part.name} (${part.mediaType})]` });
         }
       }
-      if (parts.length > 0) contents.push({ role: "user", parts });
+      push("user", parts);
     } else if (msg.role === "assistant") {
       const parts: GeminiPart[] = [];
       for (const part of msg.content) {
@@ -70,7 +83,7 @@ export function exportToGemini(thread: Thread): GeminiContent[] {
         }
         // reasoning and image output parts are dropped.
       }
-      if (parts.length > 0) contents.push({ role: "model", parts });
+      push("model", parts);
     } else if (msg.role === "tool") {
       const parts: GeminiPart[] = msg.toolResults.map((result) => ({
         functionResponse: {
@@ -82,7 +95,7 @@ export function exportToGemini(thread: Thread): GeminiContent[] {
           },
         },
       }));
-      if (parts.length > 0) contents.push({ role: "user", parts });
+      push("user", parts);
     }
   }
 

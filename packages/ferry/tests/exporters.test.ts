@@ -78,6 +78,60 @@ describe("anthropic exporter", () => {
     }
   });
 
+  it("drops unsigned reasoning instead of emitting API-rejectable thinking", () => {
+    const t = "thread-r";
+    const thread = createThread([
+      createUserMessage(t, "q"),
+      createAssistantMessage(t, [
+        { type: "reasoning", reasoning: { type: "reasoning", text: "unsigned" } },
+        { type: "text", text: "answer" },
+      ]),
+    ]);
+    const messages = exportToAnthropicMessages(thread);
+    expect(JSON.stringify(messages)).not.toContain("unsigned");
+    expect(messages[1]?.content).toEqual([{ type: "text", text: "answer" }]);
+  });
+
+  it("re-emits redacted thinking data as redacted_thinking blocks", () => {
+    const t = "thread-red";
+    const thread = createThread([
+      createUserMessage(t, "q"),
+      createAssistantMessage(t, [
+        {
+          type: "reasoning",
+          reasoning: {
+            type: "reasoning",
+            providerMetadata: { redacted: true, data: "OPAQUE_REPLAY_MATERIAL" },
+          },
+        },
+        { type: "text", text: "a" },
+      ]),
+    ]);
+    const messages = exportToAnthropicMessages(thread);
+    expect(messages[1]?.content[0]).toEqual({
+      type: "redacted_thinking",
+      data: "OPAQUE_REPLAY_MATERIAL",
+    });
+  });
+
+  it("omits empty text parts everywhere (the API rejects empty text blocks)", () => {
+    const t = "thread-e";
+    const thread = createThread([
+      createUserMessage(t, [{ type: "text", text: "" }, { type: "text", text: "real" }]),
+      createAssistantMessage(t, [
+        { type: "tool_call", toolCall: { id: "c1", name: "x", arguments: "{}" } },
+      ]),
+      createToolMessage(t, [
+        { toolCallId: "c1", name: "x", content: [{ type: "text", text: "" }] },
+      ]),
+    ]);
+    const messages = exportToAnthropicMessages(thread);
+    const flat = JSON.stringify(messages);
+    expect(flat).not.toContain('{"type":"text","text":""}');
+    const toolResult = messages[2]?.content[0];
+    expect(toolResult).toEqual({ type: "tool_result", tool_use_id: "c1", content: [] });
+  });
+
   it("survives unparseable tool arguments without throwing", () => {
     const t = "thread-y";
     const thread = createThread([
@@ -116,9 +170,40 @@ describe("openai exporter", () => {
   });
 });
 
+describe("openai exporter edge cases", () => {
+  it("keeps file-only user messages as placeholders instead of deleting the turn", () => {
+    const t = "thread-f";
+    const thread = createThread([
+      createUserMessage(t, [
+        { type: "file", name: "spec.pdf", mediaType: "application/pdf", data: "u" },
+      ]),
+      createAssistantMessage(t, [{ type: "text", text: "read it" }]),
+    ]);
+    const messages = exportToOpenAIChat(thread);
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toEqual({ role: "user", content: "[file: spec.pdf (application/pdf)]" });
+  });
+});
+
 describe("gemini exporter", () => {
   const thread = sampleThread();
   const contents = exportToGemini(thread);
+
+  it("merges a tool response and a following user turn into one user content", () => {
+    const t = "thread-g";
+    const thread = createThread([
+      createUserMessage(t, "start"),
+      createAssistantMessage(t, [
+        { type: "tool_call", toolCall: { id: "c1", name: "bash", arguments: "{}" } },
+      ]),
+      createToolMessage(t, [
+        { toolCallId: "c1", name: "bash", content: [{ type: "text", text: "out" }] },
+      ]),
+      createUserMessage(t, "next question"),
+    ]);
+    const roles = exportToGemini(thread).map((c) => c.role);
+    expect(roles).toEqual(["user", "model", "user"]); // response + user question folded
+  });
 
   it("hoists system, uses camelCase parts, pairs function responses by name", () => {
     expect(extractSystemInstruction(thread)).toBe("You are terse.");
@@ -142,6 +227,25 @@ describe("markdown exporter", () => {
     expect(md).toContain("**→ bash**");
     expect(md).toContain("more characters)");
     expect(md.startsWith("---\n")).toBe(true);
+  });
+
+  it("cannot be broken out of a fence by backticks in tool output", () => {
+    const t = "thread-m";
+    const thread = createThread([
+      createAssistantMessage(t, [
+        { type: "tool_call", toolCall: { id: "c1", name: "web", arguments: "{}" } },
+      ]),
+      createToolMessage(t, [
+        {
+          toolCallId: "c1",
+          name: "web",
+          content: [{ type: "text", text: "safe\n```\n# INJECTED HEADING\n```\nmore" }],
+        },
+      ]),
+    ]);
+    const md = exportToMarkdown(thread);
+    const fenced = md.slice(md.indexOf("← web result"));
+    expect(fenced).toMatch(/````\n[\s\S]*# INJECTED HEADING[\s\S]*\n````/);
   });
 
   it("escapes titles that would break YAML", () => {

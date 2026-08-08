@@ -19,14 +19,28 @@ import { detectFormat, type InputFormat } from "./detect.js";
 
 const program = new Command();
 
+const packageJson = JSON.parse(
+  readFileSync(new URL("../../package.json", import.meta.url), "utf-8"),
+) as { version: string };
+
 program
   .name("ferry")
   .description("Migrate AI conversations between tools (@kontourai/thread)")
-  .version("0.1.0");
+  .version(packageJson.version);
 
 function fail(message: string): never {
   console.error(`ferry: ${message}`);
   process.exit(1);
+}
+
+function warn(message: string): void {
+  console.error(`ferry: warning: ${message}`);
+}
+
+/** Filename stem, for formats whose transcript carries no session id (kiro). */
+function sessionIdFrom(file: string): string {
+  const base = file.replace(/\\/g, "/").split("/").pop() ?? file;
+  return base.replace(/\.[^.]+$/, "");
 }
 
 function resolveInputFormat(
@@ -101,7 +115,7 @@ program
       const from = resolveInputFormat(file, content, options.from);
       let threads;
       try {
-        threads = importThreads(content, from);
+        threads = importThreads(content, from, { onWarn: warn, sessionId: sessionIdFrom(file) });
       } catch (error) {
         fail(`${file}: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -135,7 +149,7 @@ program
     const from = resolveInputFormat(input, content, options.from);
     let threads;
     try {
-      threads = importThreads(content, from);
+      threads = importThreads(content, from, { onWarn: warn, sessionId: sessionIdFrom(input) });
     } catch (error) {
       fail(`${input}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -183,6 +197,8 @@ program
     console.log("  claude-code      Claude Code session JSONL (~/.claude/projects/**/*.jsonl)");
     console.log("  codex            Codex rollout JSONL (~/.codex/sessions/**/rollout-*.jsonl)");
     console.log("  opencode         OpenCode `opencode export` JSON");
+    console.log("  kiro             Kiro CLI session JSONL (~/.kiro/sessions/cli/*.jsonl)");
+    console.log("  pi               pi session JSONL (~/.pi/agent/sessions/**/*.jsonl)");
     console.log("  chatgpt-export   ChatGPT data export (conversations.json)");
     console.log("  thread           @kontourai/thread canonical JSON");
     console.log("");

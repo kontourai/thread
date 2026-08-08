@@ -199,13 +199,76 @@ describe("chatgpt export importer", () => {
   const threads = importFromChatGPTExport(fixture("chatgpt-conversations.json"));
 
   it("follows current_node, not the abandoned branch", () => {
-    expect(threads).toHaveLength(1); // conversation 2 has no messages
+    expect(threads).toHaveLength(2);
     const thread = threads[0];
     if (!thread) throw new Error("expected thread");
     expect(Thread.parse(thread)).toBeTruthy();
     const text = JSON.stringify(thread.messages);
     expect(text).not.toContain("ABANDONED BRANCH");
     expect(text).toContain("feed it twice daily");
+  });
+
+  it("tolerates a malformed children field without deleting the conversation", () => {
+    const second = threads[1];
+    if (!second) throw new Error("expected second thread");
+    expect(second.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(JSON.stringify(second.messages)).toContain("Second conversation answer");
+  });
+
+  it("keeps a codex mid-session model switch per turn", () => {
+    const thread = importFromCodex(fixture("codex-rollout.jsonl"));
+    const assistants = thread.messages.filter((m) => m.role === "assistant");
+    expect(assistants[0]?.model).toBe("gpt-5.4-codex");
+    expect(assistants[assistants.length - 1]?.model).toBe("gpt-5.5");
+  });
+
+  it("unwraps codex {output, metadata} wrappers in tool results", () => {
+    const jsonl = [
+      '{"timestamp":"2026-08-01T12:00:00.000Z","type":"session_meta","payload":{"id":"s1","cwd":"/x"}}',
+      '{"timestamp":"2026-08-01T12:00:01.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{}","call_id":"c1"}}',
+      `{"timestamp":"2026-08-01T12:00:02.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":"{\\"output\\":\\"unwrapped text\\",\\"metadata\\":{\\"exit_code\\":0}}"}}`,
+    ].join("\n");
+    const thread = importFromCodex(jsonl);
+    const tool = thread.messages.find((m) => m.role === "tool");
+    if (tool?.role !== "tool") throw new Error("expected tool");
+    expect(tool.toolResults[0]?.content[0]).toEqual({ type: "text", text: "unwrapped text" });
+  });
+
+  it("does not delete a user event because one content block is malformed", () => {
+    const warnings: string[] = [];
+    const jsonl = [
+      '{"type":"user","uuid":"u1","sessionId":"s","timestamp":"2026-08-01T10:00:00.000Z","message":{"role":"user","content":[null,{"type":"text","text":"IMPORTANT USER SPEECH"}]}}',
+      '{"type":"assistant","uuid":"a1","sessionId":"s","timestamp":"2026-08-01T10:00:01.000Z","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"ok"}]}}',
+      "corrupt line",
+    ].join("\n");
+    const thread = importFromClaudeCode(jsonl, { onWarn: (m) => warnings.push(m) });
+    expect(thread.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(JSON.stringify(thread.messages)).toContain("IMPORTANT USER SPEECH");
+    expect(warnings.join(" ")).toContain("skipped 1");
+  });
+
+  it("merges split assistant messages across interleaved sidechain lines", () => {
+    const jsonl = [
+      '{"type":"user","uuid":"u1","sessionId":"s","timestamp":"2026-08-01T10:00:00.000Z","message":{"role":"user","content":"hi"}}',
+      '{"type":"assistant","uuid":"a1","sessionId":"s","timestamp":"2026-08-01T10:00:01.000Z","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"part one"}]}}',
+      '{"type":"user","uuid":"side1","isSidechain":true,"sessionId":"s","timestamp":"2026-08-01T10:00:02.000Z","message":{"role":"user","content":"sidechain prompt"}}',
+      '{"type":"assistant","uuid":"a2","sessionId":"s","timestamp":"2026-08-01T10:00:03.000Z","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"part two"}]}}',
+    ].join("\n");
+    const thread = importFromClaudeCode(jsonl, { includeSidechains: true });
+    const ids = thread.messages.map((m) => m.id);
+    expect(new Set(ids).size).toBe(ids.length); // no duplicate ids
+    const merged = thread.messages.find((m) => m.id === "m1");
+    if (merged?.role !== "assistant") throw new Error("expected assistant");
+    expect(merged.content).toHaveLength(2);
+    const sidechain = thread.messages.find((m) => m.metadata?.["sidechain"] === true);
+    expect(sidechain).toBeTruthy();
+  });
+
+  it("preserves redacted thinking data for replay", () => {
+    const jsonl =
+      '{"type":"assistant","uuid":"a1","sessionId":"s","timestamp":"2026-08-01T10:00:00.000Z","message":{"id":"m1","role":"assistant","content":[{"type":"redacted_thinking","data":"OPAQUE_REPLAY_MATERIAL"}]}}';
+    const thread = importFromClaudeCode(jsonl);
+    expect(JSON.stringify(thread.messages)).toContain("OPAQUE_REPLAY_MATERIAL");
   });
 
   it("maps roles, thoughts, hidden system messages, and second-based times", () => {

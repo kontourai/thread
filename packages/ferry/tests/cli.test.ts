@@ -52,9 +52,10 @@ describe("ferry CLI (built binary)", () => {
       "--output",
       target,
     ]);
-    // Only one conversation yields messages, so no numbering needed.
-    const thread = JSON.parse(readFileSync(target, "utf-8"));
-    expect(thread.metadata.source).toBe("chatgpt-export");
+    const first = JSON.parse(readFileSync(join(outDir, "out-1.json"), "utf-8"));
+    const second = JSON.parse(readFileSync(join(outDir, "out-2.json"), "utf-8"));
+    expect(first.metadata.source).toBe("chatgpt-export");
+    expect(second.id).toBe("conv-0002");
   });
 
   it("converts opencode → anthropic-messages", () => {
@@ -75,6 +76,6 @@ describe("ferry CLI (built binary)", () => {
         encoding: "utf-8",
         stdio: "pipe",
       }),
-    ).toThrow(/could not detect|non-zero/i);
+    ).toThrow(/could not detect/);
   });
 });

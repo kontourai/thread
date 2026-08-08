@@ -5,5 +5,6 @@ export {
   exportThread,
   INPUT_FORMATS,
   OUTPUT_FORMATS,
+  type ImportOptions,
   type OutputFormat,
 } from "./convert.js";

@@ -12,10 +12,13 @@
  *
  * Known limitations (deliberate):
  * - Sidechain events (subagent transcripts, `isSidechain: true`) are skipped
- *   by default; pass `includeSidechains: true` to keep them interleaved.
+ *   by default; with `includeSidechains: true` they are kept interleaved and
+ *   tagged `metadata.sidechain: true`.
  * - `isMeta` user events (injected context, not user speech) are skipped.
  * - The `toolUseResult` sidecar (structured duplicate of tool_result content,
  *   often containing whole files) is not imported.
+ * Records that fail to parse are skipped and counted; pass `onWarn` to hear
+ * about them instead of losing data silently.
  */
 
 import { z } from "zod";
@@ -32,17 +35,15 @@ import type {
 import { FinishReason, THREAD_SCHEMA_VERSION } from "@kontourai/thread";
 import { parseTimestamp, toLines, type JsonlInput } from "./shared.js";
 
-const ContentBlock = z
-  .object({ type: z.string() })
-  .passthrough();
-
 const ConversationEvent = z
   .object({
     type: z.enum(["user", "assistant"]),
     message: z
       .object({
         role: z.enum(["user", "assistant"]),
-        content: z.union([z.string(), z.array(ContentBlock)]),
+        // Items are validated individually during processing so one malformed
+        // block cannot delete the whole event.
+        content: z.union([z.string(), z.array(z.unknown())]),
         id: z.string().optional(),
         model: z.string().optional(),
         stop_reason: z.string().nullish(),
@@ -80,6 +81,8 @@ const STOP_REASON_MAP: Record<string, FinishReason> = {
 
 export interface ClaudeCodeImportOptions {
   includeSidechains?: boolean;
+  /** Called with a summary of skipped/unparseable records, if any. */
+  onWarn?: (message: string) => void;
 }
 
 function imagePartFromSource(source: unknown): ImagePart | null {
@@ -122,6 +125,7 @@ export function importFromClaudeCode(
   options: ClaudeCodeImportOptions = {},
 ): Thread {
   const events: ConversationEvent[] = [];
+  let skippedLines = 0;
   let sessionId: string | undefined;
   let cwd: string | undefined;
   let version: string | undefined;
@@ -134,6 +138,7 @@ export function importFromClaudeCode(
     try {
       raw = JSON.parse(line);
     } catch {
+      skippedLines += 1;
       continue; // tolerate truncated/corrupt lines
     }
     if (typeof raw !== "object" || raw === null) continue;
@@ -150,7 +155,10 @@ export function importFromClaudeCode(
     }
 
     const parsed = ConversationEvent.safeParse(raw);
-    if (!parsed.success) continue;
+    if (!parsed.success) {
+      if (record["type"] === "user" || record["type"] === "assistant") skippedLines += 1;
+      continue;
+    }
     const event = parsed.data;
 
     if (event.isSidechain && !options.includeSidechains) continue;
@@ -163,12 +171,21 @@ export function importFromClaudeCode(
     events.push(event);
   }
 
+  if (skippedLines > 0) {
+    options.onWarn?.(
+      `claude-code: skipped ${skippedLines} unparseable or unrecognized conversation line(s)`,
+    );
+  }
   if (events.length === 0) {
     throw new Error("No Claude Code conversation events found in input");
   }
 
   const threadId = sessionId ?? "claude-code-session";
   const messages: Message[] = [];
+  // One API assistant message is split across several JSONL lines sharing
+  // message.id; sidechain lines can interleave, so merging is by id lookup,
+  // keyed separately per sidechain-ness to keep attribution honest.
+  const assistantById = new Map<string, AssistantMessage>();
   let syntheticId = 0;
   const nextId = (): string => `${threadId}:${++syntheticId}`;
 
@@ -180,6 +197,7 @@ export function importFromClaudeCode(
       const blocks = typeof apiMessage.content === "string" ? [] : apiMessage.content;
       const toolResults: ToolResult[] = [];
       for (const block of blocks) {
+        if (typeof block !== "object" || block === null) continue;
         const b = block as Record<string, unknown>;
         if (b["type"] === "tool_result" && typeof b["tool_use_id"] === "string") {
           toolResults.push({
@@ -197,6 +215,7 @@ export function importFromClaudeCode(
           role: "tool",
           timestamp,
           toolResults,
+          ...(event.isSidechain ? { metadata: { sidechain: true } } : {}),
         });
       }
       const content = contentPartsFromBlocks(apiMessage.content);
@@ -209,6 +228,7 @@ export function importFromClaudeCode(
           role: "user",
           timestamp,
           content,
+          ...(event.isSidechain ? { metadata: { sidechain: true } } : {}),
         });
       }
       continue;
@@ -221,6 +241,7 @@ export function importFromClaudeCode(
       ? [{ type: "text", text: apiMessage.content }]
       : apiMessage.content;
     for (const block of blocks) {
+      if (typeof block !== "object" || block === null) continue;
       const b = block as Record<string, unknown>;
       if (b["type"] === "text" && typeof b["text"] === "string") {
         content.push({ type: "text", text: b["text"] });
@@ -236,7 +257,15 @@ export function importFromClaudeCode(
       } else if (b["type"] === "redacted_thinking") {
         content.push({
           type: "reasoning",
-          reasoning: { type: "reasoning", providerMetadata: { redacted: true } },
+          reasoning: {
+            type: "reasoning",
+            // `data` is the opaque material the API requires back verbatim on
+            // replay; the anthropic exporter re-emits it as redacted_thinking.
+            providerMetadata: {
+              redacted: true,
+              ...(typeof b["data"] === "string" ? { data: b["data"] } : {}),
+            },
+          },
         });
       } else if (
         b["type"] === "tool_use" &&
@@ -284,21 +313,22 @@ export function importFromClaudeCode(
             }
           : undefined,
       finishReason: stopReason ? STOP_REASON_MAP[stopReason] : undefined,
+      ...(event.isSidechain ? { metadata: { sidechain: true } } : {}),
     };
 
-    const previous = messages[messages.length - 1];
-    if (
-      previous !== undefined &&
-      previous.role === "assistant" &&
-      apiMessage.id !== undefined &&
-      previous.id === apiMessage.id
-    ) {
-      previous.content.push(...content);
-      previous.model ??= assistantMessage.model;
-      previous.usage = assistantMessage.usage ?? previous.usage;
-      previous.finishReason = assistantMessage.finishReason ?? previous.finishReason;
+    const mergeKey =
+      apiMessage.id !== undefined
+        ? `${event.isSidechain ? "side:" : "main:"}${apiMessage.id}`
+        : undefined;
+    const existing = mergeKey !== undefined ? assistantById.get(mergeKey) : undefined;
+    if (existing !== undefined) {
+      existing.content.push(...content);
+      existing.model ??= assistantMessage.model;
+      existing.usage = assistantMessage.usage ?? existing.usage;
+      existing.finishReason = assistantMessage.finishReason ?? existing.finishReason;
     } else {
       messages.push(assistantMessage);
+      if (mergeKey !== undefined) assistantById.set(mergeKey, assistantMessage);
     }
   }
 

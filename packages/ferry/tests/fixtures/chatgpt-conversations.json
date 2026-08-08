@@ -8,53 +8,85 @@
         "id": "root",
         "message": null,
         "parent": null,
-        "children": ["node-system"]
+        "children": [
+          "node-system"
+        ]
       },
       "node-system": {
         "id": "node-system",
         "message": {
           "id": "msg-system",
-          "author": { "role": "system", "name": null, "metadata": {} },
+          "author": {
+            "role": "system",
+            "name": null,
+            "metadata": {}
+          },
           "create_time": null,
-          "content": { "content_type": "text", "parts": [""] },
+          "content": {
+            "content_type": "text",
+            "parts": [
+              ""
+            ]
+          },
           "status": "finished_successfully",
           "end_turn": true,
           "weight": 0,
-          "metadata": { "is_visually_hidden_from_conversation": true },
+          "metadata": {
+            "is_visually_hidden_from_conversation": true
+          },
           "recipient": "all"
         },
         "parent": "root",
-        "children": ["node-user-1"]
+        "children": [
+          "node-user-1"
+        ]
       },
       "node-user-1": {
         "id": "node-user-1",
         "message": {
           "id": "msg-user-1",
-          "author": { "role": "user", "name": null, "metadata": {} },
+          "author": {
+            "role": "user",
+            "name": null,
+            "metadata": {}
+          },
           "create_time": 1754040001.0,
           "content": {
             "content_type": "text",
-            "parts": ["My starter smells like acetone, is it dead?"]
+            "parts": [
+              "My starter smells like acetone, is it dead?"
+            ]
           },
           "status": "finished_successfully",
           "metadata": {},
           "recipient": "all"
         },
         "parent": "node-system",
-        "children": ["node-asst-old", "node-asst-thoughts"]
+        "children": [
+          "node-asst-old",
+          "node-asst-thoughts"
+        ]
       },
       "node-asst-old": {
         "id": "node-asst-old",
         "message": {
           "id": "msg-asst-old",
-          "author": { "role": "assistant", "name": null, "metadata": {} },
+          "author": {
+            "role": "assistant",
+            "name": null,
+            "metadata": {}
+          },
           "create_time": 1754040010.0,
           "content": {
             "content_type": "text",
-            "parts": ["ABANDONED BRANCH: this earlier answer was regenerated away."]
+            "parts": [
+              "ABANDONED BRANCH: this earlier answer was regenerated away."
+            ]
           },
           "status": "finished_successfully",
-          "metadata": { "model_slug": "gpt-4o" },
+          "metadata": {
+            "model_slug": "gpt-4o"
+          },
           "recipient": "all"
         },
         "parent": "node-user-1",
@@ -64,7 +96,11 @@
         "id": "node-asst-thoughts",
         "message": {
           "id": "msg-asst-thoughts",
-          "author": { "role": "assistant", "name": null, "metadata": {} },
+          "author": {
+            "role": "assistant",
+            "name": null,
+            "metadata": {}
+          },
           "create_time": 1754040020.0,
           "content": {
             "content_type": "thoughts",
@@ -76,24 +112,36 @@
             ]
           },
           "status": "finished_successfully",
-          "metadata": { "model_slug": "gpt-5" },
+          "metadata": {
+            "model_slug": "gpt-5"
+          },
           "recipient": "all"
         },
         "parent": "node-user-1",
-        "children": ["node-asst-final"]
+        "children": [
+          "node-asst-final"
+        ]
       },
       "node-asst-final": {
         "id": "node-asst-final",
         "message": {
           "id": "msg-asst-final",
-          "author": { "role": "assistant", "name": null, "metadata": {} },
+          "author": {
+            "role": "assistant",
+            "name": null,
+            "metadata": {}
+          },
           "create_time": 1754040021.0,
           "content": {
             "content_type": "text",
-            "parts": ["It's hungry, not dead — feed it twice daily for three days."]
+            "parts": [
+              "It's hungry, not dead \u2014 feed it twice daily for three days."
+            ]
           },
           "status": "finished_successfully",
-          "metadata": { "model_slug": "gpt-5" },
+          "metadata": {
+            "model_slug": "gpt-5"
+          },
           "recipient": "all"
         },
         "parent": "node-asst-thoughts",
@@ -105,18 +153,64 @@
     "id": "conv-0001"
   },
   {
-    "title": "Empty conversation that yields no thread",
+    "title": "Second conversation",
     "create_time": 1754050000.0,
-    "update_time": 1754050000.0,
+    "update_time": 1754050100.0,
     "mapping": {
-      "solo-root": {
-        "id": "solo-root",
+      "root2": {
+        "id": "root2",
         "message": null,
         "parent": null,
-        "children": []
+        "children": [
+          "u2"
+        ]
+      },
+      "u2": {
+        "id": "u2",
+        "message": {
+          "id": "msg-u2",
+          "author": {
+            "role": "user",
+            "metadata": {}
+          },
+          "create_time": 1754050001.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Second conversation question"
+            ]
+          },
+          "metadata": {}
+        },
+        "parent": "root2",
+        "children": [
+          "a2"
+        ]
+      },
+      "a2": {
+        "id": "a2",
+        "message": {
+          "id": "msg-a2",
+          "author": {
+            "role": "assistant",
+            "metadata": {}
+          },
+          "create_time": 1754050002.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Second conversation answer"
+            ]
+          },
+          "metadata": {
+            "model_slug": "gpt-5"
+          }
+        },
+        "parent": "u2",
+        "children": "not-an-array"
       }
     },
-    "current_node": "solo-root",
+    "current_node": "a2",
     "conversation_id": "conv-0002",
     "id": "conv-0002"
   }

@@ -5,7 +5,14 @@
 
 import { asRecord, tryParseJson } from "./adapters/shared.js";
 
-export type InputFormat = "claude-code" | "codex" | "opencode" | "chatgpt-export" | "thread";
+export type InputFormat =
+  | "claude-code"
+  | "codex"
+  | "opencode"
+  | "kiro"
+  | "pi"
+  | "chatgpt-export"
+  | "thread";
 
 export function detectFormat(content: string): InputFormat | undefined {
   const trimmed = content.trimStart();
@@ -22,20 +29,27 @@ export function detectFormat(content: string): InputFormat | undefined {
     ) {
       return "codex";
     }
-    if ("sessionId" in firstRecord || "parentUuid" in firstRecord) {
+    if (isClaudeCodeRecord(firstRecord)) {
       return "claude-code";
     }
+    if (isKiroRecord(firstRecord)) return "kiro";
+    if (isPiRecord(firstRecord)) return "pi";
   }
 
   const document = tryParseJson(trimmed);
   if (document === undefined) {
-    // Not a single JSON document; scan a few JSONL lines for claude-code markers.
-    for (const line of trimmed.split("\n").slice(0, 20)) {
+    // Not a single JSON document; scan JSONL lines for markers. Compacted
+    // Claude Code sessions can start with dozens of summary lines that carry
+    // no sessionId, so the scan window is generous.
+    for (const line of trimmed.split("\n").slice(0, 200)) {
       const record = asRecord(tryParseJson(line));
-      if (record && ("sessionId" in record || "parentUuid" in record)) return "claude-code";
-      if (record && (record["type"] === "response_item" || record["type"] === "session_meta")) {
+      if (!record) continue;
+      if (isClaudeCodeRecord(record)) return "claude-code";
+      if (record["type"] === "response_item" || record["type"] === "session_meta") {
         return "codex";
       }
+      if (isKiroRecord(record)) return "kiro";
+      if (isPiRecord(record)) return "pi";
     }
     return undefined;
   }
@@ -57,4 +71,31 @@ export function detectFormat(content: string): InputFormat | undefined {
     if ("info" in record) return "opencode";
   }
   return undefined;
+}
+
+/** Claude Code lines carry sessionId/parentUuid, or are its bookkeeping records. */
+function isClaudeCodeRecord(record: Record<string, unknown>): boolean {
+  if ("sessionId" in record || "parentUuid" in record) return true;
+  const type = record["type"];
+  return (
+    (type === "summary" && "leafUuid" in record) ||
+    type === "ai-title" ||
+    type === "file-history-snapshot"
+  );
+}
+
+/** Kiro CLI lines are {version, kind: Prompt|AssistantMessage|ToolResults|Compaction, data}. */
+function isKiroRecord(record: Record<string, unknown>): boolean {
+  return (
+    "data" in record &&
+    typeof record["kind"] === "string" &&
+    ["Prompt", "AssistantMessage", "ToolResults", "Compaction"].includes(record["kind"])
+  );
+}
+
+/** pi lines are {type: session|message|model_change|...}; the header carries cwd+version. */
+function isPiRecord(record: Record<string, unknown>): boolean {
+  if (record["type"] === "session" && "cwd" in record && "version" in record) return true;
+  if (record["type"] === "message" && "message" in record && "parentId" in record) return true;
+  return false;
 }

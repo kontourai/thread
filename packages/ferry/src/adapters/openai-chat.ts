@@ -1,10 +1,13 @@
 /**
  * Export to the OpenAI Chat Completions `messages` array.
  *
- * Fidelity notes (what is lost):
+ * Fidelity notes (what is lost or caveated):
  * - Reasoning parts are dropped (Chat Completions has no reasoning input).
+ * - File parts and assistant image output are flattened to text placeholders.
  * - Non-text tool result content (images) is flattened to text placeholders.
  * - Usage, model and timestamps are not representable per-message.
+ * - A trailing tool call with no recorded result exports without a following
+ *   `tool` message; replay requires supplying one.
  */
 
 import type { Thread } from "@kontourai/thread";
@@ -30,8 +33,12 @@ export function exportToOpenAIChat(thread: Thread): OpenAIChatMessage[] {
   for (const msg of thread.messages) {
     if (msg.role === "user" || msg.role === "system") {
       const text = msg.content
-        .filter((c) => c.type === "text")
-        .map((c) => c.text)
+        .map((c) => {
+          if (c.type === "text") return c.text;
+          if (c.type === "file") return `[file: ${c.name} (${c.mediaType})]`;
+          return "";
+        })
+        .filter((t) => t.length > 0)
         .join("\n");
       const images = msg.role === "user" ? msg.content.filter((c) => c.type === "image") : [];
 
@@ -47,8 +54,12 @@ export function exportToOpenAIChat(thread: Thread): OpenAIChatMessage[] {
       }
     } else if (msg.role === "assistant") {
       const text = msg.content
-        .filter((c) => c.type === "text")
-        .map((c) => c.text)
+        .map((c) => {
+          if (c.type === "text") return c.text;
+          if (c.type === "image") return `[image: ${c.image.mediaType}]`;
+          return "";
+        })
+        .filter((t) => t.length > 0)
         .join("\n");
       const toolCalls = msg.content
         .filter((c) => c.type === "tool_call")

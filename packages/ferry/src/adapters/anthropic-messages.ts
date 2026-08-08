@@ -2,13 +2,22 @@
  * Export to the Anthropic Messages API `messages` array (+ system string).
  *
  * Tool results become `tool_result` blocks inside a user message — never
- * duplicated as free-standing text — and thinking blocks round-trip with
- * their signatures so a thread imported from Claude Code can be replayed.
+ * duplicated as free-standing text. Signed thinking blocks round-trip with
+ * their signatures, and redacted thinking round-trips with its opaque data,
+ * so a thread imported from Claude Code can be replayed.
  *
- * Fidelity notes (what is lost):
+ * Fidelity notes (what is lost or caveated):
+ * - Reasoning without a provider signature (Codex/OpenCode/ChatGPT imports)
+ *   is DROPPED: the API rejects unsigned thinking blocks.
  * - File parts are flattened to text placeholders.
  * - Usage and timestamps are not representable per-message.
  * - Consecutive same-role messages are merged (API requires alternation).
+ * - Empty text parts are omitted (the API rejects empty text blocks).
+ * Replay caveats (emitted as-is, caller must handle before replay):
+ * - A thread beginning with an assistant message exports assistant-first;
+ *   the API requires a leading user turn.
+ * - A trailing tool call with no recorded result (cancelled/in-flight)
+ *   exports without a tool_result block.
  */
 
 import type { Thread, ToolCall } from "@kontourai/thread";
@@ -27,7 +36,11 @@ export interface AnthropicImageBlock {
 export interface AnthropicThinkingBlock {
   type: "thinking";
   thinking: string;
-  signature?: string;
+  signature: string;
+}
+export interface AnthropicRedactedThinkingBlock {
+  type: "redacted_thinking";
+  data: string;
 }
 export interface AnthropicToolUseBlock {
   type: "tool_use";
@@ -46,6 +59,7 @@ export type AnthropicBlock =
   | AnthropicTextBlock
   | AnthropicImageBlock
   | AnthropicThinkingBlock
+  | AnthropicRedactedThinkingBlock
   | AnthropicToolUseBlock
   | AnthropicToolResultBlock;
 
@@ -91,9 +105,11 @@ export function exportToAnthropicMessages(thread: Thread): AnthropicMessage[] {
     if (msg.role === "user") {
       const content: AnthropicBlock[] = [];
       for (const part of msg.content) {
-        if (part.type === "text") content.push({ type: "text", text: part.text });
-        else if (part.type === "image") content.push(imageBlock(part.data, part.mediaType));
-        else if (part.type === "file") {
+        if (part.type === "text") {
+          if (part.text.length > 0) content.push({ type: "text", text: part.text });
+        } else if (part.type === "image") {
+          content.push(imageBlock(part.data, part.mediaType));
+        } else if (part.type === "file") {
           content.push({ type: "text", text: `[file: ${part.name} (${part.mediaType})]` });
         }
       }
@@ -102,16 +118,18 @@ export function exportToAnthropicMessages(thread: Thread): AnthropicMessage[] {
       const content: AnthropicBlock[] = [];
       for (const part of msg.content) {
         if (part.type === "text") {
-          content.push({ type: "text", text: part.text });
+          if (part.text.length > 0) content.push({ type: "text", text: part.text });
         } else if (part.type === "reasoning") {
-          if (part.reasoning.text !== undefined) {
-            content.push({
-              type: "thinking",
-              thinking: part.reasoning.text,
-              ...(part.reasoning.signature !== undefined
-                ? { signature: part.reasoning.signature }
-                : {}),
-            });
+          const { text, signature, providerMetadata } = part.reasoning;
+          const redactedData = providerMetadata?.["redacted"] === true
+            ? providerMetadata["data"]
+            : undefined;
+          if (typeof redactedData === "string" && redactedData.length > 0) {
+            content.push({ type: "redacted_thinking", data: redactedData });
+          } else if (text !== undefined && text.length > 0 && signature !== undefined) {
+            // Unsigned reasoning is dropped: the API rejects thinking blocks
+            // without a valid signature.
+            content.push({ type: "thinking", thinking: text, signature });
           }
         } else if (part.type === "tool_call") {
           content.push({
@@ -129,10 +147,12 @@ export function exportToAnthropicMessages(thread: Thread): AnthropicMessage[] {
       const content: AnthropicBlock[] = msg.toolResults.map((result) => ({
         type: "tool_result",
         tool_use_id: result.toolCallId,
-        content: result.content.map((part): AnthropicTextBlock | AnthropicImageBlock => {
-          if (part.type === "text") return { type: "text", text: part.text };
-          if (part.type === "image") return imageBlock(part.data, part.mediaType);
-          return { type: "text", text: `[file: ${part.name}]` };
+        content: result.content.flatMap((part): Array<AnthropicTextBlock | AnthropicImageBlock> => {
+          if (part.type === "text") {
+            return part.text.length > 0 ? [{ type: "text", text: part.text }] : [];
+          }
+          if (part.type === "image") return [imageBlock(part.data, part.mediaType)];
+          return [{ type: "text", text: `[file: ${part.name}]` }];
         }),
         ...(result.isError !== undefined ? { is_error: result.isError } : {}),
       }));
