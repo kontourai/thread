@@ -165,10 +165,20 @@ export function importFromPi(jsonlContent: JsonlInput, options: PiImportOptions 
           });
         }
       }
-      if (content.length === 0) continue;
       const usage = asRecord(message["usage"]);
       const stopReason =
         typeof message["stopReason"] === "string" ? message["stopReason"] : undefined;
+      const errorMessage =
+        typeof message["errorMessage"] === "string" ? message["errorMessage"] : undefined;
+      if (content.length === 0) {
+        // Errored/aborted turns often have no content but ARE conversation
+        // events (they carry stopReason + errorMessage) — keep them instead
+        // of losing them silently; anything else empty is counted.
+        if (stopReason !== "error" && stopReason !== "aborted") {
+          skippedLines += 1;
+          continue;
+        }
+      }
       const asNonNegInt = (value: unknown): number | undefined =>
         typeof value === "number" && Number.isFinite(value) && value >= 0
           ? Math.round(value)
@@ -191,6 +201,7 @@ export function importFromPi(jsonlContent: JsonlInput, options: PiImportOptions 
               }
             : undefined,
         finishReason: stopReason !== undefined ? STOP_REASON_MAP[stopReason] : undefined,
+        ...(errorMessage !== undefined ? { metadata: { errorMessage } } : {}),
       });
     } else if (role === "toolResult") {
       if (typeof message["toolCallId"] !== "string") continue;

@@ -51,7 +51,7 @@ export interface AnthropicToolUseBlock {
 export interface AnthropicToolResultBlock {
   type: "tool_result";
   tool_use_id: string;
-  content: Array<AnthropicTextBlock | AnthropicImageBlock>;
+  content?: Array<AnthropicTextBlock | AnthropicImageBlock>;
   is_error?: boolean;
 }
 
@@ -144,18 +144,26 @@ export function exportToAnthropicMessages(thread: Thread): AnthropicMessage[] {
       }
       push("assistant", content);
     } else if (msg.role === "tool") {
-      const content: AnthropicBlock[] = msg.toolResults.map((result) => ({
-        type: "tool_result",
-        tool_use_id: result.toolCallId,
-        content: result.content.flatMap((part): Array<AnthropicTextBlock | AnthropicImageBlock> => {
-          if (part.type === "text") {
-            return part.text.length > 0 ? [{ type: "text", text: part.text }] : [];
-          }
-          if (part.type === "image") return [imageBlock(part.data, part.mediaType)];
-          return [{ type: "text", text: `[file: ${part.name}]` }];
-        }),
-        ...(result.isError !== undefined ? { is_error: result.isError } : {}),
-      }));
+      const content: AnthropicBlock[] = msg.toolResults.map((result) => {
+        const blocks = result.content.flatMap(
+          (part): Array<AnthropicTextBlock | AnthropicImageBlock> => {
+            if (part.type === "text") {
+              return part.text.length > 0 ? [{ type: "text", text: part.text }] : [];
+            }
+            if (part.type === "image") return [imageBlock(part.data, part.mediaType)];
+            return [{ type: "text", text: `[file: ${part.name}]` }];
+          },
+        );
+        return {
+          type: "tool_result",
+          tool_use_id: result.toolCallId,
+          // Omit `content` entirely when nothing survives filtering — an
+          // absent key is unambiguous where an empty array is untested
+          // against the live API.
+          ...(blocks.length > 0 ? { content: blocks } : {}),
+          ...(result.isError !== undefined ? { is_error: result.isError } : {}),
+        };
+      });
       push("user", content);
     }
   }

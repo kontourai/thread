@@ -28,7 +28,9 @@ import { asRecord } from "./shared.js";
 
 // Field-level .catch() keeps one malformed node from silently deleting the
 // whole conversation: a bad message degrades to null, bad links degrade to
-// no-links, and the rest of the tree still imports.
+// no-links, and the rest of the tree still imports. These per-field
+// degradations are not individually counted (only whole-conversation skips
+// reach onWarn) — zod's .catch offers no hook to observe them.
 const MappingNode = z
   .object({
     id: z.string().optional(),

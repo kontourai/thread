@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync, mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -68,6 +68,24 @@ describe("ferry CLI (built binary)", () => {
     const body = JSON.parse(out);
     expect(Array.isArray(body.messages)).toBe(true);
     expect(JSON.stringify(body)).toContain("tool_result");
+  });
+
+  it("reports the package version, not a hardcoded string", () => {
+    const packageJson = JSON.parse(
+      readFileSync(join(here, "..", "package.json"), "utf-8"),
+    ) as { version: string };
+    expect(run(["--version"]).trim()).toBe(packageJson.version);
+  });
+
+  it("auto-detects claude-code files prefixed by many summary lines", () => {
+    const prefixed = join(outDir, "summary-prefixed.jsonl");
+    const summaries = Array.from({ length: 30 }, (_, i) =>
+      JSON.stringify({ type: "summary", summary: `s${i}`, leafUuid: `l${i}` }),
+    );
+    const original = readFileSync(join(fixturesDir, "claude-code-session.jsonl"), "utf-8");
+    writeFileSync(prefixed, `${summaries.join("\n")}\n${original}`);
+    const out = run(["inspect", prefixed]);
+    expect(out).toContain("format:    claude-code");
   });
 
   it("fails cleanly on undetectable input", () => {

@@ -222,6 +222,34 @@ describe("chatgpt export importer", () => {
     expect(assistants[assistants.length - 1]?.model).toBe("gpt-5.5");
   });
 
+  it("does not unwrap legitimate JSON tool output lacking the metadata sibling", () => {
+    const jsonl = [
+      '{"timestamp":"2026-08-01T12:00:00.000Z","type":"session_meta","payload":{"id":"s1","cwd":"/x"}}',
+      '{"timestamp":"2026-08-01T12:00:01.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{}","call_id":"c1"}}',
+      `{"timestamp":"2026-08-01T12:00:02.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":"{\\"output\\":\\"dist\\",\\"clean\\":true}"}}`,
+    ].join("\n");
+    const thread = importFromCodex(jsonl);
+    const tool = thread.messages.find((m) => m.role === "tool");
+    if (tool?.role !== "tool") throw new Error("expected tool");
+    // No metadata sibling → this is real tool output, kept verbatim.
+    expect(tool.toolResults[0]?.content[0]?.type).toBe("text");
+    expect(JSON.stringify(tool.toolResults[0]?.content)).toContain("clean");
+  });
+
+  it("backfills the session model for items before the first turn_context", () => {
+    const jsonl = [
+      '{"timestamp":"2026-08-01T12:00:00.000Z","type":"session_meta","payload":{"id":"s1","cwd":"/x"}}',
+      '{"timestamp":"2026-08-01T12:00:01.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"early"}]}}',
+      '{"timestamp":"2026-08-01T12:00:02.000Z","type":"turn_context","payload":{"model":"gpt-5.5"}}',
+      '{"timestamp":"2026-08-01T12:00:03.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"q"}]}}',
+      '{"timestamp":"2026-08-01T12:00:04.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"late"}]}}',
+    ].join("\n");
+    const thread = importFromCodex(jsonl);
+    const assistants = thread.messages.filter((m) => m.role === "assistant");
+    expect(assistants[0]?.model).toBe("gpt-5.5"); // backfilled
+    expect(assistants[1]?.model).toBe("gpt-5.5");
+  });
+
   it("unwraps codex {output, metadata} wrappers in tool results", () => {
     const jsonl = [
       '{"timestamp":"2026-08-01T12:00:00.000Z","type":"session_meta","payload":{"id":"s1","cwd":"/x"}}',

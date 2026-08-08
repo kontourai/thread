@@ -192,6 +192,8 @@ export function importFromKiro(jsonlContent: JsonlInput, options: KiroImportOpti
           timestamp: currentTime(),
           content,
         });
+      } else {
+        skippedLines += 1;
       }
     } else if (kind === "ToolResults") {
       const toolResults: ToolResult[] = [];

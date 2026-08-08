@@ -98,6 +98,15 @@ export function importFromCodex(
     items.push({ timestamp: parseTimestamp(record.timestamp), payload, model: currentModel });
   }
 
+  // Items recorded before the first turn_context carry no model; in the
+  // common single-model session that is pure fidelity loss, so backfill
+  // leading unknowns from the first model that becomes known.
+  const firstKnownModel = items.find((item) => item.model !== undefined)?.model;
+  for (const item of items) {
+    if (item.model !== undefined) break;
+    item.model = firstKnownModel;
+  }
+
   if (skippedLines > 0) {
     options.onWarn?.(`codex: skipped ${skippedLines} unparseable line(s)`);
   }
@@ -265,16 +274,19 @@ function extractMessageParts(content: unknown): ContentPart[] {
 
 /**
  * Tool outputs are usually strings, occasionally wrapped as {output, metadata}
- * — either as an actual object or JSON-encoded into the string. The wrapper's
- * text is what a reader wants; its metadata sibling is dropped.
+ * — either as an actual object or JSON-encoded into the string. Unwrapping
+ * requires BOTH fields: a lone string `output` key also occurs in legitimate
+ * JSON tool results, and unwrapping those would truncate them.
  */
 function extractOutputText(output: unknown): string {
+  const isWrapper = (candidate: Record<string, unknown> | undefined): candidate is Record<string, unknown> =>
+    candidate !== undefined && typeof candidate["output"] === "string" && "metadata" in candidate;
   const record = asRecord(output);
-  if (record && typeof record["output"] === "string") return record["output"];
+  if (isWrapper(record)) return record["output"] as string;
   if (typeof output !== "string") return "";
   if (output.startsWith("{")) {
     const parsed = asRecord(tryParseJson(output));
-    if (parsed && typeof parsed["output"] === "string") return parsed["output"];
+    if (isWrapper(parsed)) return parsed["output"] as string;
   }
   return output;
 }

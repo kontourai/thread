@@ -129,7 +129,8 @@ describe("anthropic exporter", () => {
     const flat = JSON.stringify(messages);
     expect(flat).not.toContain('{"type":"text","text":""}');
     const toolResult = messages[2]?.content[0];
-    expect(toolResult).toEqual({ type: "tool_result", tool_use_id: "c1", content: [] });
+    // content key omitted entirely — an empty array is untested against the API
+    expect(toolResult).toEqual({ type: "tool_result", tool_use_id: "c1" });
   });
 
   it("survives unparseable tool arguments without throwing", () => {

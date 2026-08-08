@@ -19,6 +19,13 @@
  *   often containing whole files) is not imported.
  * Records that fail to parse are skipped and counted; pass `onWarn` to hear
  * about them instead of losing data silently.
+ *
+ * Chronology tradeoff: split assistant lines sharing one API message id are
+ * merged into a single message even when other events (tool results, user
+ * interjections) landed between them in the file — the id denotes one API
+ * message, so reconstruction wins over strict file order. Real transcripts
+ * also occasionally repeat a user-event uuid on two distinct lines; message
+ * ids are therefore not guaranteed unique across a thread.
  */
 
 import { z } from "zod";

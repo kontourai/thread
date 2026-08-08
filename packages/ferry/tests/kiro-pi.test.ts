@@ -106,6 +106,19 @@ describe("pi importer", () => {
     const restored = threadFromJson(threadToJson(thread));
     expect(restored).toEqual(thread);
   });
+
+  it("keeps errored/aborted assistant turns instead of dropping them silently", () => {
+    const jsonl = [
+      '{"type":"session","version":3,"id":"s-err","timestamp":"2026-08-01T09:00:00.000Z","cwd":"/x"}',
+      '{"type":"message","id":"u1","parentId":null,"timestamp":"2026-08-01T09:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"go"}],"timestamp":1785661201000}}',
+      '{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-08-01T09:00:02.000Z","message":{"role":"assistant","stopReason":"error","errorMessage":"Codex error: server_is_overloaded","timestamp":1785661202000,"content":[]}}',
+    ].join("\n");
+    const thread = importFromPi(jsonl);
+    const errored = thread.messages[1];
+    if (errored?.role !== "assistant") throw new Error("expected assistant");
+    expect(errored.finishReason).toBe("error");
+    expect(errored.metadata?.["errorMessage"]).toContain("server_is_overloaded");
+  });
 });
 
 describe("detection for kiro and pi", () => {
