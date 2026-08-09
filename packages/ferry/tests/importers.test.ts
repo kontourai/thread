@@ -141,11 +141,13 @@ describe("codex importer", () => {
 
   it("normalizes modern and historical token counts and preserves their complete raw metadata", () => {
     const first = thread.messages[1];
+    const modern = thread.messages[3];
     const second = thread.messages[5];
-    if (first?.role !== "assistant" || second?.role !== "assistant") {
+    if (first?.role !== "assistant" || modern?.role !== "assistant" || second?.role !== "assistant") {
       throw new Error("expected assistant messages");
     }
-    expect(first.usage).toEqual({
+    expect(first.usage).toBeUndefined();
+    expect(modern.usage).toEqual({
       inputTokens: 4918,
       outputTokens: 249,
       reasoningTokens: 0,
@@ -159,7 +161,7 @@ describe("codex importer", () => {
       cacheReadTokens: 9600,
       cacheWriteTokens: 0,
     });
-    expect(first.metadata?.codexTokenUsage).toEqual({
+    expect(modern.metadata?.codexTokenUsage).toEqual({
       input_tokens: 4918,
       cached_input_tokens: 0,
       cache_write_input_tokens: 0,
@@ -174,7 +176,7 @@ describe("codex importer", () => {
       reasoning_output_tokens: 20,
       total_tokens: 30523,
     });
-    expect(first.metadata?.codexRateLimits).toEqual({
+    expect(modern.metadata?.codexRateLimits).toEqual({
       limit_id: "codex",
       limit_name: null,
       primary: null,
@@ -195,9 +197,121 @@ describe("codex importer", () => {
     });
   });
 
-  it("rolls up distinct forked token counts that precede any imported assistant", () => {
+  it("attaches the latest forked count to the first assistant and rolls up its superseded predecessor", () => {
     const forked = importFromCodex(fixture("codex-forked-rollout.jsonl"));
     expect(forked.metadata?.custom?.codexUnattributedUsage).toEqual({
+      inputTokens: 21293,
+      outputTokens: 182,
+      reasoningTokens: 39,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      events: 1,
+    });
+    const assistant = forked.messages[0];
+    if (assistant?.role !== "assistant") throw new Error("expected assistant");
+    expect(assistant.usage).toEqual({
+      inputTokens: 6687,
+      outputTokens: 262,
+      reasoningTokens: 63,
+      cacheReadTokens: 20224,
+      cacheWriteTokens: 0,
+    });
+  });
+
+  it("holds a token count before any assistant and attaches it to the first assistant that follows", () => {
+    const jsonl = [
+      '{"timestamp":"2026-06-15T10:00:00.000Z","type":"session_meta","payload":{"id":"held-count"}}',
+      '{"timestamp":"2026-06-15T10:00:01.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":20}}}}',
+      '{"timestamp":"2026-06-15T10:00:02.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"receives held usage"}]}}',
+    ].join("\n");
+    const held = importFromCodex(jsonl);
+    const assistant = held.messages[0];
+    if (assistant?.role !== "assistant") throw new Error("expected assistant");
+    expect(assistant.usage).toEqual({
+      inputTokens: 100,
+      outputTokens: 20,
+      reasoningTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
+  });
+
+  it("never retroactively attaches a new count to a stale usage-less assistant", () => {
+    const jsonl = [
+      '{"timestamp":"2026-06-15T10:00:00.000Z","type":"session_meta","payload":{"id":"stale-count"}}',
+      '{"timestamp":"2026-06-15T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"old pre-format assistant"}]}}',
+      '{"timestamp":"2026-06-15T10:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":20}}}}',
+      '{"timestamp":"2026-06-15T10:00:03.000Z","type":"response_item","payload":{"type":"agent_message","content":[{"type":"output_text","text":"ignored"}]}}',
+      '{"timestamp":"2026-06-15T10:00:04.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"new assistant"}]}}',
+    ].join("\n");
+    const imported = importFromCodex(jsonl);
+    const [oldAssistant, newAssistant] = imported.messages;
+    if (oldAssistant?.role !== "assistant" || newAssistant?.role !== "assistant") {
+      throw new Error("expected assistant messages");
+    }
+    expect(oldAssistant.usage).toBeUndefined();
+    expect(newAssistant.usage?.inputTokens).toBe(100);
+  });
+
+  it("imports observed nullable-info, missing-cache-write, and modern rate-limit variants", () => {
+    const variants = importFromCodex(fixture("codex-rollout-variants.jsonl"));
+    expect(variants.messages).toHaveLength(2);
+    const [, missingCacheWrite] = variants.messages;
+    if (missingCacheWrite?.role !== "assistant") {
+      throw new Error("expected assistant messages");
+    }
+    expect(variants.metadata?.custom?.codexRateLimits).toEqual({
+      limit_id: "codex",
+      limit_name: "weekly",
+      primary: { used_percent: 5, window_minutes: 300, resets_at: 1781517722 },
+      secondary: { used_percent: 10, window_minutes: 10080, resets_at: 1782117722 },
+      credits: null,
+      individual_limit: { used_percent: 2, window_minutes: 60, resets_at: 1781503322 },
+      spend_control_reached: false,
+      plan_type: "pro",
+      rate_limit_reached_type: null,
+    });
+    expect(missingCacheWrite.usage).toEqual({
+      inputTokens: 20706,
+      outputTokens: 217,
+      reasoningTokens: 20,
+      cacheReadTokens: 9600,
+      cacheWriteTokens: 0,
+    });
+    expect(missingCacheWrite.metadata?.codexTokenUsage).toEqual({
+      input_tokens: 30306,
+      cached_input_tokens: 9600,
+      output_tokens: 217,
+      reasoning_output_tokens: 20,
+      total_tokens: 30523,
+    });
+  });
+
+  it("marks synthetic impossible exclusive input without inventing raw usage fields", () => {
+    // Synthetic anomaly probe: real samples contained no negative exclusive input.
+    const jsonl = [
+      '{"timestamp":"2026-06-15T10:00:00.000Z","type":"session_meta","payload":{"id":"negative-count"}}',
+      '{"timestamp":"2026-06-15T10:00:01.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":20,"output_tokens":5}}}}',
+      '{"timestamp":"2026-06-15T10:00:02.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"anomaly recipient"}]}}',
+    ].join("\n");
+    const imported = importFromCodex(jsonl);
+    const assistant = imported.messages[0];
+    if (assistant?.role !== "assistant") throw new Error("expected assistant");
+    expect(assistant.usage?.inputTokens).toBe(0);
+    expect(assistant.metadata?.codexTokenUsage).toEqual({
+      input_tokens: 10,
+      cached_input_tokens: 20,
+      output_tokens: 5,
+      inconsistent: true,
+    });
+  });
+
+  it("rolls up counts that have no assistant after their preceding count boundary", () => {
+    const [firstCount, secondCount, assistant] = fixture("codex-forked-rollout.jsonl").trim().split("\n");
+    const repeated = importFromCodex([assistant, firstCount, secondCount].join("\n"));
+    const importedAssistant = repeated.messages[0];
+    if (importedAssistant?.role !== "assistant") throw new Error("expected assistant");
+    expect(repeated.metadata?.custom?.codexUnattributedUsage).toEqual({
       inputTokens: 27980,
       outputTokens: 444,
       reasoningTokens: 102,
@@ -205,31 +319,7 @@ describe("codex importer", () => {
       cacheWriteTokens: 0,
       events: 2,
     });
-    const assistant = forked.messages[0];
-    if (assistant?.role !== "assistant") throw new Error("expected assistant");
-    expect(assistant.usage).toBeUndefined();
-  });
-
-  it("does not misattribute a second token count after the latest assistant already has usage", () => {
-    const [firstCount, secondCount, assistant] = fixture("codex-forked-rollout.jsonl").trim().split("\n");
-    const repeated = importFromCodex([assistant, firstCount, secondCount].join("\n"));
-    const importedAssistant = repeated.messages[0];
-    if (importedAssistant?.role !== "assistant") throw new Error("expected assistant");
-    expect(importedAssistant.usage).toEqual({
-      inputTokens: 21293,
-      outputTokens: 182,
-      reasoningTokens: 39,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-    });
-    expect(repeated.metadata?.custom?.codexUnattributedUsage).toEqual({
-      inputTokens: 6687,
-      outputTokens: 262,
-      reasoningTokens: 63,
-      cacheReadTokens: 20224,
-      cacheWriteTokens: 0,
-      events: 1,
-    });
+    expect(importedAssistant.usage).toBeUndefined();
   });
 
   it("throws when no response items exist", () => {

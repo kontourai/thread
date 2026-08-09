@@ -24,10 +24,12 @@
  *   `usage.inputTokens` by subtracting cached reads. Cache-write subtraction
  *   is an assumption pending a real nonzero observation; the unmodified source
  *   object remains in `metadata.codexTokenUsage`.
- * - `token_count` carries no message id. Its usage and rate limits attach to
- *   the most recent imported assistant message when it lacks usage. Otherwise
- *   normalized usage is retained in the thread-level `codexUnattributedUsage`
- *   rollup. The last observed `rate_limits` is also retained as the
+ * - `token_count` carries no message id. Its usage and rate limits attach only
+ *   to the first usage-less imported assistant emitted after the preceding
+ *   token count. When none has appeared yet, the count is held for the next
+ *   assistant; superseded or terminal held counts are retained in the
+ *   thread-level `codexUnattributedUsage` rollup. The last observed
+ *   `rate_limits` is also retained as the
  *   point-in-time `metadata.custom.codexRateLimits` thread snapshot.
  * - `agent_message` events are deliberately unimported (separate issue).
  */
@@ -150,9 +152,11 @@ export function importFromCodex(
   } | null = null;
   let lastRateLimits: Record<string, unknown> | undefined;
   let unattributedUsage: CodexUnattributedUsage | undefined;
+  let previousTokenCountMessageIndex: number | undefined;
+  let heldTokenCount: TokenCount | undefined;
   const flushPending = (): void => {
     if (pending && pending.content.length > 0) {
-      messages.push({
+      const assistant: AssistantMessage = {
         id: nextId(),
         threadId,
         role: "assistant",
@@ -160,7 +164,12 @@ export function importFromCodex(
         content: pending.content,
         model: pending.model,
         provider,
-      });
+      };
+      if (heldTokenCount) {
+        attachTokenCount(assistant, heldTokenCount);
+        heldTokenCount = undefined;
+      }
+      messages.push(assistant);
     }
     pending = null;
   };
@@ -180,21 +189,27 @@ export function importFromCodex(
       flushPending();
       const rateLimits = asRecord(payload["rate_limits"]);
       if (rateLimits) lastRateLimits = rateLimits;
-      const usage = extractTokenUsage(payload);
+      const extractedUsage = extractTokenUsage(payload);
       const rawUsage = extractRawTokenUsage(payload);
-      const assistant = findLatestAssistant(messages);
-      if (assistant && assistant.usage === undefined) {
-        if (usage) {
-          assistant.usage = usage;
+      const tokenCount: TokenCount = {
+        usage: extractedUsage?.usage,
+        rawUsage,
+        rateLimits,
+        inconsistent: extractedUsage?.inconsistent,
+      };
+      const assistant =
+        previousTokenCountMessageIndex === undefined
+          ? undefined
+          : findAssistantWithoutUsage(messages, previousTokenCountMessageIndex);
+      if (assistant) {
+        attachTokenCount(assistant, tokenCount);
+      } else {
+        if (heldTokenCount?.usage) {
+          unattributedUsage = addUnattributedUsage(unattributedUsage, heldTokenCount.usage);
         }
-        assistant.metadata = {
-          ...assistant.metadata,
-          ...(rawUsage ? { codexTokenUsage: rawUsage } : {}),
-          ...(rateLimits ? { codexRateLimits: rateLimits } : {}),
-        };
-      } else if (usage) {
-        unattributedUsage = addUnattributedUsage(unattributedUsage, usage);
+        heldTokenCount = tokenCount;
       }
+      previousTokenCountMessageIndex = messages.length;
       continue;
     }
     const type = payload["type"];
@@ -282,6 +297,9 @@ export function importFromCodex(
     // agent_message, tool_search_call/_output and unknown types are skipped.
   }
   flushPending();
+  if (heldTokenCount?.usage) {
+    unattributedUsage = addUnattributedUsage(unattributedUsage, heldTokenCount.usage);
+  }
 
   if (messages.length === 0) {
     throw new Error("Codex input contained no importable messages");
@@ -311,23 +329,37 @@ export function importFromCodex(
   };
 }
 
-function extractTokenUsage(payload: Record<string, unknown>): TokenUsage | undefined {
+interface ExtractedTokenUsage {
+  usage: TokenUsage;
+  inconsistent: boolean;
+}
+
+interface TokenCount {
+  usage: TokenUsage | undefined;
+  rawUsage: Record<string, unknown> | undefined;
+  rateLimits: Record<string, unknown> | undefined;
+  inconsistent: boolean | undefined;
+}
+
+function extractTokenUsage(payload: Record<string, unknown>): ExtractedTokenUsage | undefined {
   const lastUsage = extractRawTokenUsage(payload);
   if (!lastUsage) return undefined;
-  const hasInputTokens = nonnegativeInteger(lastUsage["input_tokens"]) !== undefined;
-  const hasOutputTokens = nonnegativeInteger(lastUsage["output_tokens"]) !== undefined;
-  if (!hasInputTokens && !hasOutputTokens) return undefined;
-  const inputTokens = nonnegativeInteger(lastUsage["input_tokens"]) ?? 0;
+  const inputTokens = nonnegativeInteger(lastUsage["input_tokens"]);
+  const outputTokens = nonnegativeInteger(lastUsage["output_tokens"]);
+  if (inputTokens === undefined || outputTokens === undefined) return undefined;
   const cachedInputTokens = nonnegativeInteger(lastUsage["cached_input_tokens"]) ?? 0;
   const cacheWriteInputTokens = nonnegativeInteger(lastUsage["cache_write_input_tokens"]) ?? 0;
-  const outputTokens = nonnegativeInteger(lastUsage["output_tokens"]) ?? 0;
   const reasoningTokens = nonnegativeInteger(lastUsage["reasoning_output_tokens"]) ?? 0;
+  const exclusiveInputTokens = inputTokens - cachedInputTokens - cacheWriteInputTokens;
   return {
-    inputTokens: Math.max(0, inputTokens - cachedInputTokens - cacheWriteInputTokens),
-    outputTokens,
-    reasoningTokens,
-    cacheReadTokens: cachedInputTokens,
-    cacheWriteTokens: cacheWriteInputTokens,
+    usage: {
+      inputTokens: Math.max(0, exclusiveInputTokens),
+      outputTokens,
+      reasoningTokens,
+      cacheReadTokens: cachedInputTokens,
+      cacheWriteTokens: cacheWriteInputTokens,
+    },
+    inconsistent: exclusiveInputTokens < 0,
   };
 }
 
@@ -357,10 +389,29 @@ function nonnegativeInteger(value: unknown): number | undefined {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
 }
 
-function findLatestAssistant(messages: Message[]): AssistantMessage | undefined {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
+function attachTokenCount(assistant: AssistantMessage, tokenCount: TokenCount): void {
+  if (tokenCount.usage) assistant.usage = tokenCount.usage;
+  assistant.metadata = {
+    ...assistant.metadata,
+    ...(tokenCount.rawUsage
+      ? {
+          codexTokenUsage: {
+            ...tokenCount.rawUsage,
+            ...(tokenCount.inconsistent ? { inconsistent: true } : {}),
+          },
+        }
+      : {}),
+    ...(tokenCount.rateLimits ? { codexRateLimits: tokenCount.rateLimits } : {}),
+  };
+}
+
+function findAssistantWithoutUsage(
+  messages: Message[],
+  fromIndex: number,
+): AssistantMessage | undefined {
+  for (let index = fromIndex; index < messages.length; index += 1) {
     const message = messages[index];
-    if (message?.role === "assistant") return message;
+    if (message?.role === "assistant" && message.usage === undefined) return message;
   }
   return undefined;
 }
