@@ -61,6 +61,33 @@ describe("claude-code importer", () => {
       cacheReadTokens: 80,
       cacheWriteTokens: 16,
     });
+    // Usage and pricing/deduplication extras are last-wins together: this is
+    // the final split record's request id and usage, not the earlier one.
+    expect(assistant.metadata?.["claudeUsageExtras"]).toEqual({
+      cacheCreation5m: 4,
+      cacheCreation1h: 12,
+      serviceTier: "priority",
+      requestId: "req_1",
+      serverToolUse: {
+        web_search_requests: 2,
+        web_fetch_requests: 3,
+      },
+    });
+  });
+
+  it("omits Claude usage extras entirely when a record has none", () => {
+    const assistant = thread.messages[3];
+    if (assistant?.role !== "assistant") throw new Error("expected assistant");
+    expect(assistant.usage).toEqual({ inputTokens: 200, outputTokens: 30 });
+    expect(assistant.metadata?.["claudeUsageExtras"]).toBeUndefined();
+    expect(assistant.metadata).toBeUndefined();
+  });
+
+  it("surfaces requestId for messageId:requestId usage deduplication", () => {
+    const assistant = thread.messages[1];
+    if (assistant?.role !== "assistant") throw new Error("expected assistant");
+    const extras = assistant.metadata?.["claudeUsageExtras"] as { requestId?: string } | undefined;
+    expect(`${assistant.id}:${extras?.requestId}`).toBe("msg_01AAA:req_1");
   });
 
   it("pairs tool results with their calls and keeps ISO timestamps as epoch ms", () => {

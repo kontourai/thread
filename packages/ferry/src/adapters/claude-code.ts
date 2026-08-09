@@ -17,6 +17,9 @@
  * - `isMeta` user events (injected context, not user speech) are skipped.
  * - The `toolUseResult` sidecar (structured duplicate of tool_result content,
  *   often containing whole files) is not imported.
+ * - Pricing and deduplication usage extras are retained in
+ *   `metadata.claudeUsageExtras`; other provider-specific usage fields (such
+ *   as `inference_geo`, `iterations`, and `speed`) are dropped.
  * Records that fail to parse are skipped and counted; pass `onWarn` to hear
  * about them instead of losing data silently.
  *
@@ -60,12 +63,27 @@ const ConversationEvent = z
             output_tokens: z.number().int().nonnegative().optional(),
             cache_read_input_tokens: z.number().int().nonnegative().nullish(),
             cache_creation_input_tokens: z.number().int().nonnegative().nullish(),
+            cache_creation: z
+              .object({
+                ephemeral_5m_input_tokens: z.number().int().nonnegative().optional(),
+                ephemeral_1h_input_tokens: z.number().int().nonnegative().optional(),
+              })
+              .optional(),
+            service_tier: z.string().optional(),
+            server_tool_use: z
+              .object({
+                web_search_requests: z.number().int().nonnegative().optional(),
+                web_fetch_requests: z.number().int().nonnegative().optional(),
+              })
+              .passthrough()
+              .optional(),
           })
           .passthrough()
           .optional(),
       })
       .passthrough(),
     uuid: z.string().optional(),
+    requestId: z.string().optional(),
     timestamp: z.string().optional(),
     sessionId: z.string().optional(),
     cwd: z.string().optional(),
@@ -301,6 +319,7 @@ export function importFromClaudeCode(
     if (content.length === 0) continue;
 
     const usage = apiMessage.usage;
+    const claudeUsageExtras = usage && assistantUsageExtras(usage, event.requestId);
     const stopReason = apiMessage.stop_reason ?? undefined;
     const assistantMessage: AssistantMessage = {
       id: apiMessage.id ?? event.uuid ?? nextId(),
@@ -320,7 +339,14 @@ export function importFromClaudeCode(
             }
           : undefined,
       finishReason: stopReason ? STOP_REASON_MAP[stopReason] : undefined,
-      ...(event.isSidechain ? { metadata: { sidechain: true } } : {}),
+      ...((event.isSidechain || claudeUsageExtras)
+        ? {
+            metadata: {
+              ...(event.isSidechain ? { sidechain: true } : {}),
+              ...(claudeUsageExtras ? { claudeUsageExtras } : {}),
+            },
+          }
+        : {}),
     };
 
     const mergeKey =
@@ -332,6 +358,18 @@ export function importFromClaudeCode(
       existing.content.push(...content);
       existing.model ??= assistantMessage.model;
       existing.usage = assistantMessage.usage ?? existing.usage;
+      if (assistantMessage.usage !== undefined) {
+        const claudeUsageExtras = assistantMessage.metadata?.["claudeUsageExtras"];
+        if (claudeUsageExtras !== undefined) {
+          existing.metadata = {
+            ...existing.metadata,
+            claudeUsageExtras,
+          };
+        } else if (existing.metadata?.["claudeUsageExtras"] !== undefined) {
+          const { claudeUsageExtras: _, ...metadata } = existing.metadata;
+          existing.metadata = Object.keys(metadata).length > 0 ? metadata : undefined;
+        }
+      }
       existing.finishReason = assistantMessage.finishReason ?? existing.finishReason;
     } else {
       messages.push(assistantMessage);
@@ -359,6 +397,24 @@ export function importFromClaudeCode(
     createdAt: messages[0]?.timestamp ?? Date.now(),
     updatedAt: messages[messages.length - 1]?.timestamp ?? Date.now(),
   };
+}
+
+function assistantUsageExtras(
+  usage: NonNullable<ConversationEvent["message"]["usage"]>,
+  requestId: string | undefined,
+): Record<string, unknown> | undefined {
+  const extras = {
+    ...(usage.cache_creation?.ephemeral_5m_input_tokens !== undefined
+      ? { cacheCreation5m: usage.cache_creation.ephemeral_5m_input_tokens }
+      : {}),
+    ...(usage.cache_creation?.ephemeral_1h_input_tokens !== undefined
+      ? { cacheCreation1h: usage.cache_creation.ephemeral_1h_input_tokens }
+      : {}),
+    ...(usage.service_tier !== undefined ? { serviceTier: usage.service_tier } : {}),
+    ...(requestId !== undefined ? { requestId } : {}),
+    ...(usage.server_tool_use !== undefined ? { serverToolUse: usage.server_tool_use } : {}),
+  };
+  return Object.keys(extras).length > 0 ? extras : undefined;
 }
 
 function lastTimestamp(messages: Message[]): number | undefined {
