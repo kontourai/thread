@@ -1,6 +1,6 @@
 {
   "name": "@kontourai/thread",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Canonical AI conversation schema — a portable message format for agent threads",
   "license": "Apache-2.0",
   "type": "module",
