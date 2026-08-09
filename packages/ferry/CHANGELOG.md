@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.3.0](https://github.com/kontourai/thread/compare/ferry-v0.2.0...ferry-v0.3.0) (2026-08-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* **deps:** typescript 7 — name node types explicitly in ferry ([#22](https://github.com/kontourai/thread/issues/22))
+* **deps:** vitest 4 — stop emitting tests into the published build ([#21](https://github.com/kontourai/thread/issues/21))
+* **deps:** migrate to zod 4 ([#20](https://github.com/kontourai/thread/issues/20))
+
+### Fixes
+
+* **deps:** bump @types/node from 25.9.5 to 26.1.2 ([#5](https://github.com/kontourai/thread/issues/5)) ([86b644c](https://github.com/kontourai/thread/commit/86b644cb32bbd2459bd93fd265d492edf55e1e3a))
+* **deps:** bump commander from 14.0.3 to 15.0.0 ([#6](https://github.com/kontourai/thread/issues/6)) ([fea97d0](https://github.com/kontourai/thread/commit/fea97d01fa63b3604ec345342289e4deff430cbd))
+* **deps:** migrate to zod 4 ([#20](https://github.com/kontourai/thread/issues/20)) ([7f68727](https://github.com/kontourai/thread/commit/7f6872764d8b03178e14ebd28779140ccd4df6c2))
+* **deps:** typescript 7 — name node types explicitly in ferry ([#22](https://github.com/kontourai/thread/issues/22)) ([06aa417](https://github.com/kontourai/thread/commit/06aa417dea03d1ffb4e766a3322f490973f96d27))
+* **deps:** vitest 4 — stop emitting tests into the published build ([#21](https://github.com/kontourai/thread/issues/21)) ([c8c2f54](https://github.com/kontourai/thread/commit/c8c2f5406ef302ed2296b04dbd491edd03ad8fc5))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @kontourai/thread bumped from ^0.2.0 to ^0.3.0
+
 ## [0.2.0](https://github.com/kontourai/thread/compare/ferry-v0.1.0...ferry-v0.2.0) (2026-08-09)
 
 
