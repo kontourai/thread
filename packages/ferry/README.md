@@ -19,4 +19,9 @@ Importers are grounded in real transcript shapes (including multi-hundred-MB
 JSONL files, which stream); each adapter documents what its target format
 cannot represent.
 
+Codex JSONL fixtures are copied from source rollouts retained in the local
+corpus.
+Only free-text values are replaced with `[redacted]`; keys, nesting, and every
+non-text value remain as written by Codex.
+
 License: Apache-2.0
