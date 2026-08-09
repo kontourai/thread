@@ -404,6 +404,23 @@ describe("codex importer", () => {
     expect(importedAssistant.usage?.inputTokens).toBe(271);
   });
 
+  it("tolerates a line with no payload key (zod 4 unknown-key regression guard)", () => {
+    // zod 4 made bare `z.unknown()` object keys required AT PARSE TIME.
+    // Without .optional() on RolloutLine.payload this line fails validation
+    // and the whole record is silently counted as skipped.
+    const warnings: string[] = [];
+    const jsonl = [
+      '{"timestamp":"2026-08-01T12:00:00.000Z","type":"session_meta","payload":{"id":"s1","cwd":"/x"}}',
+      '{"timestamp":"2026-08-01T12:00:00.500Z","type":"event_msg"}',
+      '{"timestamp":"2026-08-01T12:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}}',
+    ].join("\n");
+    const thread = importFromCodex(jsonl, { onWarn: (m) => warnings.push(m) });
+    expect(thread.messages).toHaveLength(1);
+    // The payload-less line is recognized and ignored, NOT counted as a
+    // parse failure.
+    expect(warnings).toEqual([]);
+  });
+
   it("throws when no response items exist", () => {
     expect(() => importFromCodex('{"type":"event_msg","payload":{"type":"noise"}}')).toThrow(
       /No Codex response items/,

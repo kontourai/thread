@@ -37,18 +37,18 @@ const MappingNode = z
     message: z
       .object({
         id: z.string(),
-        author: z.object({ role: z.string() }).passthrough(),
-        content: z.object({ content_type: z.string() }).passthrough(),
+        author: z.object({ role: z.string() }).loose(),
+        content: z.object({ content_type: z.string() }).loose(),
         create_time: z.number().nullish(),
-        metadata: z.record(z.unknown()).optional(),
+        metadata: z.record(z.string(), z.unknown()).optional(),
       })
-      .passthrough()
+      .loose()
       .nullable()
       .catch(null),
     parent: z.string().nullable().catch(null),
     children: z.array(z.string()).catch([]),
   })
-  .passthrough();
+  .loose();
 
 const Conversation = z
   .object({
@@ -57,10 +57,10 @@ const Conversation = z
     title: z.string().nullish(),
     create_time: z.number().nullish(),
     update_time: z.number().nullish(),
-    mapping: z.record(MappingNode),
+    mapping: z.record(z.string(), MappingNode),
     current_node: z.string().nullish(),
   })
-  .passthrough();
+  .loose();
 
 type Conversation = z.infer<typeof Conversation>;
 type Node = z.infer<typeof MappingNode>;

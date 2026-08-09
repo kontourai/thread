@@ -41,7 +41,9 @@ import { asRecord, toLines, type JsonlInput } from "./shared.js";
 const KiroRecord = z
   .object({
     kind: z.string(),
-    data: z.unknown(),
+    // See codex.ts: zod 4 makes bare `z.unknown()` keys required at parse
+    // time, so a record without `data` would be dropped as unparseable.
+    data: z.unknown().optional(),
     version: z.unknown().optional(),
   })
   .passthrough();
