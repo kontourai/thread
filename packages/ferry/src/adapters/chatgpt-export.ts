@@ -4,7 +4,8 @@
  * Each conversation is a tree (`mapping` of nodes with parent/children);
  * the canonical transcript is the path from `current_node` up to the root —
  * NOT a walk down first-children, which would pick an arbitrary branch when
- * the user edited messages.
+ * the user edited messages. Alternative branches are dropped; their importable
+ * message count is recorded in `metadata.custom` and reported through `onWarn`.
  *
  * Content types handled: `text`, `multimodal_text` (string parts only),
  * `code` (imported as text), `thoughts` (imported as reasoning).
@@ -93,6 +94,35 @@ function textFromParts(parts: unknown): string[] {
   return parts.filter((p): p is string => typeof p === "string" && p.length > 0);
 }
 
+/** Whether this node would produce an imported message if it were on the path. */
+function wouldProduceMessage(node: Node): boolean {
+  const msg = node.message;
+  if (!msg || msg.metadata?.["is_visually_hidden_from_conversation"] === true) return false;
+
+  if (msg.author.role === "user" || msg.author.role === "system") {
+    return textFromParts((msg.content as Record<string, unknown>)["parts"]).length > 0;
+  }
+  if (msg.author.role !== "assistant") return false;
+
+  const content = msg.content as Record<string, unknown>;
+  if (msg.content.content_type === "text" || msg.content.content_type === "multimodal_text") {
+    return textFromParts(content["parts"]).length > 0;
+  }
+  if (msg.content.content_type === "code") {
+    return typeof content["text"] === "string" && content["text"].length > 0;
+  }
+  if (msg.content.content_type === "thoughts") {
+    return (
+      Array.isArray(content["thoughts"]) &&
+      content["thoughts"].some((thought) => {
+        const thoughtRecord = asRecord(thought);
+        return typeof thoughtRecord?.["content"] === "string" && thoughtRecord["content"].length > 0;
+      })
+    );
+  }
+  return false;
+}
+
 export interface ChatGPTImportOptions {
   /** Called with a summary of skipped conversations, if any. */
   onWarn?: (message: string) => void;
@@ -106,6 +136,7 @@ export function importFromChatGPTExport(
   const candidates = Array.isArray(raw) ? raw : [raw];
   const threads: Thread[] = [];
   let skippedConversations = 0;
+  let abandonedBranchMessages = 0;
 
   for (const candidate of candidates) {
     const parsed = Conversation.safeParse(candidate);
@@ -117,8 +148,13 @@ export function importFromChatGPTExport(
     const threadId =
       conversation.id ?? conversation.conversation_id ?? `chatgpt-${threads.length + 1}`;
     const messages: Message[] = [];
+    const canonicalNodes = new Set(canonicalPath(conversation));
+    const conversationAbandonedBranchMessages = Object.values(conversation.mapping).filter(
+      (node) => !canonicalNodes.has(node) && wouldProduceMessage(node),
+    ).length;
+    abandonedBranchMessages += conversationAbandonedBranchMessages;
 
-    for (const node of canonicalPath(conversation)) {
+    for (const node of canonicalNodes) {
       const msg = node.message;
       if (!msg) continue;
       const metadata = msg.metadata ?? {};
@@ -186,6 +222,9 @@ export function importFromChatGPTExport(
     const metadata: ThreadMetadata = {
       source: "chatgpt-export",
       title: conversation.title ?? undefined,
+      ...(conversationAbandonedBranchMessages > 0
+        ? { custom: { chatgptAbandonedBranchMessages: conversationAbandonedBranchMessages } }
+        : {}),
     };
     threads.push({
       schemaVersion: THREAD_SCHEMA_VERSION,
@@ -206,6 +245,11 @@ export function importFromChatGPTExport(
   if (skippedConversations > 0) {
     options.onWarn?.(
       `chatgpt-export: skipped ${skippedConversations} conversation(s) that did not match the export shape`,
+    );
+  }
+  if (abandonedBranchMessages > 0) {
+    options.onWarn?.(
+      `chatgpt-export: ${abandonedBranchMessages} message(s) on alternative branches were not exported (the canonical current_node path was used)`,
     );
   }
   return threads;

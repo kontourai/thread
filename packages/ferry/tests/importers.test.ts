@@ -490,6 +490,27 @@ describe("chatgpt export importer", () => {
     expect(text).toContain("feed it twice daily");
   });
 
+  it("discloses importable messages dropped from alternative branches", () => {
+    const warnings: string[] = [];
+    const withWarnings = importFromChatGPTExport(fixture("chatgpt-conversations.json"), {
+      onWarn: (message) => warnings.push(message),
+    });
+    expect(withWarnings[0]?.metadata?.custom).toEqual({ chatgptAbandonedBranchMessages: 1 });
+    expect(warnings).toEqual([
+      "chatgpt-export: 1 message(s) on alternative branches were not exported (the canonical current_node path was used)",
+    ]);
+  });
+
+  it("does not record or warn about conversations without alternative branches", () => {
+    const warnings: string[] = [];
+    const [, secondConversation] = JSON.parse(fixture("chatgpt-conversations.json")) as unknown[];
+    const [thread] = importFromChatGPTExport(JSON.stringify(secondConversation), {
+      onWarn: (message) => warnings.push(message),
+    });
+    expect(thread?.metadata?.custom?.["chatgptAbandonedBranchMessages"]).toBeUndefined();
+    expect(warnings).toEqual([]);
+  });
+
   it("tolerates a malformed children field without deleting the conversation", () => {
     const second = threads[1];
     if (!second) throw new Error("expected second thread");
