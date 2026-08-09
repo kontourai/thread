@@ -19,15 +19,27 @@
  * - `agent_message` items (inter-agent traffic) and `tool_search_*` items are
  *   skipped.
  * - `reasoning.encrypted_content` is dropped; only summary text is kept.
+ * - Codex `last_token_usage.input_tokens` includes cached reads and cache
+ *   writes. It is normalized to exclusive `usage.inputTokens` by subtracting
+ *   both, matching the Claude Code importer's convention; the unmodified
+ *   source object remains in `metadata.codexTokenUsage`.
+ * - `token_count` carries no message id. Its usage and rate limits attach to
+ *   the most recent assistant message without usage. If multiple token-count
+ *   events arrive before another assistant message, the first attachment is
+ *   retained and later events do not silently overwrite it. The last observed
+ *   `rate_limits` is also retained as the point-in-time
+ *   `metadata.custom.codexRateLimits` thread snapshot.
  */
 
 import { z } from "zod";
 import type {
   AssistantContent,
+  AssistantMessage,
   ContentPart,
   Message,
   Thread,
   ThreadMetadata,
+  TokenUsage,
 } from "@kontourai/thread";
 import { THREAD_SCHEMA_VERSION } from "@kontourai/thread";
 import { asRecord, parseTimestamp, toLines, tryParseJson, type JsonlInput } from "./shared.js";
@@ -62,8 +74,10 @@ export function importFromCodex(
     timestamp: number | undefined;
     payload: Record<string, unknown>;
     model: string | undefined;
+    isTokenCount?: boolean;
   }
   const items: Item[] = [];
+  let responseItemCount = 0;
 
   for (const line of toLines(jsonlContent)) {
     if (!line.trim()) continue;
@@ -94,8 +108,17 @@ export function importFromCodex(
       if (typeof payload["model"] === "string") currentModel = payload["model"];
       continue;
     }
-    if (record.type !== "response_item") continue;
-    items.push({ timestamp: parseTimestamp(record.timestamp), payload, model: currentModel });
+    if (record.type === "response_item") {
+      responseItemCount += 1;
+      items.push({ timestamp: parseTimestamp(record.timestamp), payload, model: currentModel });
+    } else if (record.type === "event_msg" && payload["type"] === "token_count") {
+      items.push({
+        timestamp: parseTimestamp(record.timestamp),
+        payload,
+        model: currentModel,
+        isTokenCount: true,
+      });
+    }
   }
 
   // Items recorded before the first turn_context carry no model; in the
@@ -110,7 +133,7 @@ export function importFromCodex(
   if (skippedLines > 0) {
     options.onWarn?.(`codex: skipped ${skippedLines} unparseable line(s)`);
   }
-  if (items.length === 0) {
+  if (responseItemCount === 0) {
     throw new Error("No Codex response items found in input");
   }
 
@@ -124,6 +147,7 @@ export function importFromCodex(
     timestamp: number | undefined;
     model: string | undefined;
   } | null = null;
+  let lastRateLimits: Record<string, unknown> | undefined;
   const flushPending = (): void => {
     if (pending && pending.content.length > 0) {
       messages.push({
@@ -149,7 +173,23 @@ export function importFromCodex(
     pending.content.push(part);
   };
 
-  for (const { timestamp, payload, model } of items) {
+  for (const { timestamp, payload, model, isTokenCount } of items) {
+    if (isTokenCount) {
+      flushPending();
+      const rateLimits = asRecord(payload["rate_limits"]);
+      if (rateLimits) lastRateLimits = rateLimits;
+      const usage = extractTokenUsage(payload);
+      const assistant = findAssistantWithoutUsage(messages);
+      if (usage && assistant) {
+        assistant.usage = usage;
+        assistant.metadata = {
+          ...assistant.metadata,
+          codexTokenUsage: asRecord(asRecord(payload["info"])?.["last_token_usage"]) ?? {},
+          ...(rateLimits ? { codexRateLimits: rateLimits } : {}),
+        };
+      }
+      continue;
+    }
     const type = payload["type"];
 
     if (type === "message") {
@@ -244,6 +284,7 @@ export function importFromCodex(
     source: "codex",
     sourceVersion: cliVersion,
     cwd,
+    ...(lastRateLimits ? { custom: { codexRateLimits: lastRateLimits } } : {}),
   };
 
   return {
@@ -254,6 +295,44 @@ export function importFromCodex(
     createdAt: messages[0]?.timestamp ?? Date.now(),
     updatedAt: messages[messages.length - 1]?.timestamp ?? Date.now(),
   };
+}
+
+function extractTokenUsage(payload: Record<string, unknown>): TokenUsage | undefined {
+  const lastUsage = asRecord(asRecord(payload["info"])?.["last_token_usage"]);
+  if (!lastUsage) return undefined;
+  const inputTokens = nonnegativeInteger(lastUsage["input_tokens"]);
+  const cachedInputTokens = nonnegativeInteger(lastUsage["cached_input_tokens"]);
+  const cacheWriteInputTokens = nonnegativeInteger(lastUsage["cache_write_input_tokens"]);
+  const outputTokens = nonnegativeInteger(lastUsage["output_tokens"]);
+  const reasoningTokens = nonnegativeInteger(lastUsage["reasoning_output_tokens"]);
+  if (
+    inputTokens === undefined ||
+    cachedInputTokens === undefined ||
+    cacheWriteInputTokens === undefined ||
+    outputTokens === undefined ||
+    reasoningTokens === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    inputTokens: Math.max(0, inputTokens - cachedInputTokens - cacheWriteInputTokens),
+    outputTokens,
+    reasoningTokens,
+    cacheReadTokens: cachedInputTokens,
+    cacheWriteTokens: cacheWriteInputTokens,
+  };
+}
+
+function nonnegativeInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+function findAssistantWithoutUsage(messages: Message[]): AssistantMessage | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role === "assistant" && message.usage === undefined) return message;
+  }
+  return undefined;
 }
 
 function extractMessageParts(content: unknown): ContentPart[] {
