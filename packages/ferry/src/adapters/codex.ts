@@ -51,7 +51,11 @@ const RolloutLine = z
   .object({
     type: z.string(),
     timestamp: z.union([z.string(), z.number()]).optional(),
-    payload: z.unknown(),
+    // .optional() is load-bearing under zod 4: `z.unknown()` keys became
+    // NON-optional at parse time (not just in inferred types), so a line
+    // missing `payload` would fail validation and be silently counted as
+    // skipped. Tolerating unexpected shapes is this importer's premise.
+    payload: z.unknown().optional(),
   })
   .passthrough();
 

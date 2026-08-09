@@ -51,6 +51,22 @@ describe("kiro importer", () => {
     expect(restored).toEqual(thread);
   });
 
+  it("tolerates a record with no data key (zod 4 unknown-key regression guard)", () => {
+    const warnings: string[] = [];
+    const jsonl = [
+      '{"version":"v1","kind":"Prompt","data":{"message_id":"p1","content":[{"kind":"text","data":"hi"}],"meta":{"timestamp":1786067801}}}',
+      '{"version":"v1","kind":"Compaction"}',
+    ].join("\n");
+    const thread = importFromKiro(jsonl, {
+      sessionId: "s-nodata",
+      onWarn: (m) => warnings.push(m),
+    });
+    expect(thread.messages).toHaveLength(1);
+    // A data-less Compaction record is skipped as bookkeeping, not counted
+    // as an unparseable line.
+    expect(warnings).toEqual([]);
+  });
+
   it("throws when nothing is importable", () => {
     expect(() => importFromKiro('{"kind":"Compaction","data":{}}')).toThrow(/no importable/);
   });

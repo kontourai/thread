@@ -43,7 +43,7 @@ export type Timestamp = z.infer<typeof Timestamp>;
 export const TextPart = z.object({
   type: z.literal("text"),
   text: z.string(),
-  annotations: z.record(z.unknown()).optional(),
+  annotations: z.record(z.string(), z.unknown()).optional(),
 });
 export type TextPart = z.infer<typeof TextPart>;
 
@@ -83,7 +83,7 @@ export const ToolCall = z.object({
   id: ToolCallId,
   name: z.string(),
   arguments: z.string(),
-  parsedArguments: z.record(z.unknown()).optional(),
+  parsedArguments: z.record(z.string(), z.unknown()).optional(),
 });
 export type ToolCall = z.infer<typeof ToolCall>;
 
@@ -93,7 +93,7 @@ export const ToolResult = z.object({
   name: z.string(),
   content: z.array(ContentPart),
   isError: z.boolean().optional(),
-  structuredResult: z.record(z.unknown()).optional(),
+  structuredResult: z.record(z.string(), z.unknown()).optional(),
 });
 export type ToolResult = z.infer<typeof ToolResult>;
 
@@ -110,7 +110,7 @@ export const ReasoningPart = z.object({
   type: z.literal("reasoning"),
   text: z.string().optional(),
   signature: z.string().optional(),
-  providerMetadata: z.record(z.unknown()).optional(),
+  providerMetadata: z.record(z.string(), z.unknown()).optional(),
 });
 export type ReasoningPart = z.infer<typeof ReasoningPart>;
 
@@ -158,7 +158,7 @@ const BaseMessage = {
   id: MessageId,
   threadId: ThreadId,
   timestamp: Timestamp,
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 };
 
 export const UserMessage = z.object({
@@ -239,7 +239,7 @@ export const ThreadMetadata = z.object({
       commit: z.string().optional(),
     })
     .optional(),
-  custom: z.record(z.unknown()).optional(),
+  custom: z.record(z.string(), z.unknown()).optional(),
 });
 export type ThreadMetadata = z.infer<typeof ThreadMetadata>;
 
