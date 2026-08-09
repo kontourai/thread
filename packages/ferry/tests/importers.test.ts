@@ -497,7 +497,7 @@ describe("chatgpt export importer", () => {
     });
     expect(withWarnings[0]?.metadata?.custom).toEqual({ chatgptAbandonedBranchMessages: 1 });
     expect(warnings).toEqual([
-      "chatgpt-export: 1 message(s) on alternative branches were not exported (the canonical current_node path was used)",
+      "chatgpt-export: 1 message(s) on alternative branches were not imported (only the canonical path is imported; they remain in the source export)",
     ]);
   });
 

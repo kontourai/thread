@@ -30,8 +30,9 @@ import { asRecord } from "./shared.js";
 // Field-level .catch() keeps one malformed node from silently deleting the
 // whole conversation: a bad message degrades to null, bad links degrade to
 // no-links, and the rest of the tree still imports. These per-field
-// degradations are not individually counted (only whole-conversation skips
-// reach onWarn) — zod's .catch offers no hook to observe them.
+// degradations are not individually counted — zod's .catch offers no hook to
+// observe them. (Whole-conversation skips and alternative-branch message
+// loss DO reach onWarn; see below.)
 const MappingNode = z
   .object({
     id: z.string().optional(),
@@ -124,7 +125,11 @@ function wouldProduceMessage(node: Node): boolean {
 }
 
 export interface ChatGPTImportOptions {
-  /** Called with a summary of skipped conversations, if any. */
+  /**
+   * Called with a summary of what did not make it into the threads:
+   * conversations skipped for shape, and messages left on alternative
+   * branches. Not called when nothing was lost.
+   */
   onWarn?: (message: string) => void;
 }
 
@@ -249,7 +254,7 @@ export function importFromChatGPTExport(
   }
   if (abandonedBranchMessages > 0) {
     options.onWarn?.(
-      `chatgpt-export: ${abandonedBranchMessages} message(s) on alternative branches were not exported (the canonical current_node path was used)`,
+      `chatgpt-export: ${abandonedBranchMessages} message(s) on alternative branches were not imported (only the canonical path is imported; they remain in the source export)`,
     );
   }
   return threads;
