@@ -197,10 +197,14 @@ export function importFromCodex(
         rateLimits,
         inconsistent: extractedUsage?.inconsistent,
       };
-      const assistant =
-        previousTokenCountMessageIndex === undefined
-          ? undefined
-          : findAssistantWithoutUsage(messages, previousTokenCountMessageIndex);
+      // Attribution window: from the previous token_count (or file start for
+      // the first count) forward. A count reports the turn that just
+      // completed, so it attaches backward within its window; holding is only
+      // for windows with no candidate assistant (round-3 review, H-2).
+      const assistant = findAssistantWithoutUsage(
+        messages,
+        previousTokenCountMessageIndex ?? 0,
+      );
       if (assistant) {
         attachTokenCount(assistant, tokenCount);
       } else {
@@ -395,10 +399,10 @@ function attachTokenCount(assistant: AssistantMessage, tokenCount: TokenCount): 
     ...assistant.metadata,
     ...(tokenCount.rawUsage
       ? {
-          codexTokenUsage: {
-            ...tokenCount.rawUsage,
-            ...(tokenCount.inconsistent ? { inconsistent: true } : {}),
-          },
+          // Byte-pure raw writer object — the anomaly marker lives OUTSIDE it
+          // so preservation stays honest (round-3 review, L-2).
+          codexTokenUsage: tokenCount.rawUsage,
+          ...(tokenCount.inconsistent ? { codexTokenUsageInconsistent: true } : {}),
         }
       : {}),
     ...(tokenCount.rateLimits ? { codexRateLimits: tokenCount.rateLimits } : {}),
@@ -409,7 +413,10 @@ function findAssistantWithoutUsage(
   messages: Message[],
   fromIndex: number,
 ): AssistantMessage | undefined {
-  for (let index = fromIndex; index < messages.length; index += 1) {
+  // Most-recent-first: a token_count describes the turn that JUST completed,
+  // so the newest usage-less assistant inside the window is the subject; the
+  // window floor (fromIndex) keeps earlier turns' assistants unreachable.
+  for (let index = messages.length - 1; index >= fromIndex; index -= 1) {
     const message = messages[index];
     if (message?.role === "assistant" && message.usage === undefined) return message;
   }
