@@ -30,6 +30,59 @@ describe("ferry CLI (built binary)", () => {
     expect(out).toContain("toolCalls: 1");
   });
 
+  it("aggregates usage from real Claude Code and Codex transcripts in a table", () => {
+    const out = run([
+      "usage",
+      join(fixturesDir, "claude-code-session.jsonl"),
+      join(fixturesDir, "codex-rollout.jsonl"),
+    ]);
+    expect(out).toBe(
+      "key              messages  noUsage  inputTokens  outputTokens  cacheReadTokens  cacheWriteTokens\n" +
+        "---------------  --------  -------  -----------  ------------  ---------------  ----------------\n" +
+        "claude-sonnet-5  2         0        320          70            80               16\n" +
+        "gpt-5.4-codex    0         2        0            0             0                0\n" +
+        "gpt-5.5          0         1        0            0             0                0\n",
+    );
+  });
+
+  it("prints usage buckets as JSON without losing coverage counts", () => {
+    const out = run([
+      "usage",
+      join(fixturesDir, "claude-code-session.jsonl"),
+      join(fixturesDir, "codex-rollout.jsonl"),
+      "--json",
+    ]);
+    expect(JSON.parse(out)).toEqual([
+      {
+        key: "claude-sonnet-5",
+        messages: 2,
+        messagesWithoutUsage: 0,
+        inputTokens: 320,
+        outputTokens: 70,
+        cacheReadTokens: 80,
+        cacheWriteTokens: 16,
+      },
+      {
+        key: "gpt-5.4-codex",
+        messages: 0,
+        messagesWithoutUsage: 2,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      },
+      {
+        key: "gpt-5.5",
+        messages: 0,
+        messagesWithoutUsage: 1,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      },
+    ]);
+  });
+
   it("converts codex → thread JSON on stdout", () => {
     const out = run([
       "convert",
