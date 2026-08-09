@@ -33,8 +33,10 @@ describe("claude-code importer", () => {
     expect(thread.metadata?.title).toBe("Fix the flaky retry test");
   });
 
-  it("yields user → assistant → tool → assistant with sidechains and meta dropped", () => {
-    expect(thread.messages.map((m) => m.role)).toEqual(["user", "assistant", "tool", "assistant"]);
+  it("yields user → assistant → tool → assistant messages with sidechains and meta dropped", () => {
+    expect(thread.messages.map((m) => m.role)).toEqual([
+      "user", "assistant", "tool", "assistant", "assistant", "assistant", "assistant",
+    ]);
     const allText = JSON.stringify(thread.messages);
     expect(allText).not.toContain("Subagent");
     expect(allText).not.toContain("Caveat");
@@ -61,6 +63,62 @@ describe("claude-code importer", () => {
       cacheReadTokens: 80,
       cacheWriteTokens: 16,
     });
+    // Usage and pricing/deduplication extras are last-wins together: this is
+    // the final split record's request id and usage, not the earlier one.
+    expect(assistant.metadata?.["claudeUsageExtras"]).toEqual({
+      cacheCreation5m: 4,
+      cacheCreation1h: 12,
+      serviceTier: "priority",
+      requestId: "req_1",
+      serverToolUse: {
+        web_search_requests: 2,
+        web_fetch_requests: 3,
+      },
+    });
+  });
+
+  it("removes stale Claude usage extras when the winning split usage has none", () => {
+    const assistant = thread.messages.find((message) => message.id === "msg_01STALE");
+    if (assistant?.role !== "assistant") throw new Error("expected assistant");
+    expect(getTextContent(assistant)).toContain("Earlier split content with extras.");
+    expect(getTextContent(assistant)).toContain("Winning split content without extras.");
+    expect(assistant.usage).toEqual({ inputTokens: 410, outputTokens: 12 });
+    expect(assistant.metadata?.["claudeUsageExtras"]).toBeUndefined();
+    expect(assistant.metadata).toBeUndefined();
+  });
+
+  it("imports a null service_tier without inventing a serviceTier extra", () => {
+    const assistant = thread.messages.find((message) => message.id === "msg_01NULL");
+    if (assistant?.role !== "assistant") throw new Error("expected assistant");
+    expect(getTextContent(assistant)).toBe("A synthetic assistant response with a null service tier.");
+    expect(assistant.usage).toEqual({ inputTokens: 250, outputTokens: 25 });
+    expect(assistant.metadata?.["claudeUsageExtras"]).toEqual({ requestId: "req_null_tier" });
+    expect(assistant.metadata?.["claudeUsageExtras"]).not.toHaveProperty("serviceTier");
+  });
+
+  it("deduplicates usage repeated on every split content-block record", () => {
+    const assistants = thread.messages.filter(
+      (message) => message.role === "assistant" && message.id === "msg_01REPEAT",
+    );
+    expect(assistants).toHaveLength(1);
+    const [assistant] = assistants;
+    if (assistant?.role !== "assistant") throw new Error("expected assistant");
+    expect(getTextContent(assistant)).toBe(
+      "Repeated usage first content block.\nRepeated usage second content block.",
+    );
+    expect(assistant.usage).toEqual({
+      inputTokens: 300,
+      outputTokens: 80,
+      cacheReadTokens: 120,
+      cacheWriteTokens: 20,
+    });
+  });
+
+  it("surfaces requestId for messageId:requestId usage deduplication", () => {
+    const assistant = thread.messages[1];
+    if (assistant?.role !== "assistant") throw new Error("expected assistant");
+    const extras = assistant.metadata?.["claudeUsageExtras"] as { requestId?: string } | undefined;
+    expect(`${assistant.id}:${extras?.requestId}`).toBe("msg_01AAA:req_1");
   });
 
   it("pairs tool results with their calls and keeps ISO timestamps as epoch ms", () => {
@@ -73,7 +131,7 @@ describe("claude-code importer", () => {
     });
     expect(thread.messages[0]?.timestamp).toBe(Date.parse("2026-08-01T10:00:00.000Z"));
     expect(thread.createdAt).toBe(Date.parse("2026-08-01T10:00:00.000Z"));
-    expect(thread.updatedAt).toBe(Date.parse("2026-08-01T10:00:15.000Z"));
+    expect(thread.updatedAt).toBe(Date.parse("2026-08-01T10:00:19.000Z"));
   });
 
   it("keeps sidechains when asked", () => {

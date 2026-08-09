@@ -26,7 +26,7 @@ describe("ferry CLI (built binary)", () => {
   it("auto-detects and inspects a claude-code transcript", () => {
     const out = run(["inspect", join(fixturesDir, "claude-code-session.jsonl")]);
     expect(out).toContain("format:    claude-code");
-    expect(out).toContain("messages:  4");
+    expect(out).toContain("messages:  7");
     expect(out).toContain("toolCalls: 1");
   });
 
