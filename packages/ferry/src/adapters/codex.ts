@@ -19,16 +19,17 @@
  * - `agent_message` items (inter-agent traffic) and `tool_search_*` items are
  *   skipped.
  * - `reasoning.encrypted_content` is dropped; only summary text is kept.
- * - Codex `last_token_usage.input_tokens` includes cached reads and cache
- *   writes. It is normalized to exclusive `usage.inputTokens` by subtracting
- *   both, matching the Claude Code importer's convention; the unmodified
- *   source object remains in `metadata.codexTokenUsage`.
+ * - Codex `last_token_usage.input_tokens` includes cached reads (observed:
+ *   98/98 cumulative-delta-consistent samples) and is normalized to exclusive
+ *   `usage.inputTokens` by subtracting cached reads. Cache-write subtraction
+ *   is an assumption pending a real nonzero observation; the unmodified source
+ *   object remains in `metadata.codexTokenUsage`.
  * - `token_count` carries no message id. Its usage and rate limits attach to
- *   the most recent assistant message without usage. If multiple token-count
- *   events arrive before another assistant message, the first attachment is
- *   retained and later events do not silently overwrite it. The last observed
- *   `rate_limits` is also retained as the point-in-time
- *   `metadata.custom.codexRateLimits` thread snapshot.
+ *   the most recent imported assistant message when it lacks usage. Otherwise
+ *   normalized usage is retained in the thread-level `codexUnattributedUsage`
+ *   rollup. The last observed `rate_limits` is also retained as the
+ *   point-in-time `metadata.custom.codexRateLimits` thread snapshot.
+ * - `agent_message` events are deliberately unimported (separate issue).
  */
 
 import { z } from "zod";
@@ -148,6 +149,7 @@ export function importFromCodex(
     model: string | undefined;
   } | null = null;
   let lastRateLimits: Record<string, unknown> | undefined;
+  let unattributedUsage: CodexUnattributedUsage | undefined;
   const flushPending = (): void => {
     if (pending && pending.content.length > 0) {
       messages.push({
@@ -179,14 +181,19 @@ export function importFromCodex(
       const rateLimits = asRecord(payload["rate_limits"]);
       if (rateLimits) lastRateLimits = rateLimits;
       const usage = extractTokenUsage(payload);
-      const assistant = findAssistantWithoutUsage(messages);
-      if (usage && assistant) {
-        assistant.usage = usage;
+      const rawUsage = extractRawTokenUsage(payload);
+      const assistant = findLatestAssistant(messages);
+      if (assistant && assistant.usage === undefined) {
+        if (usage) {
+          assistant.usage = usage;
+        }
         assistant.metadata = {
           ...assistant.metadata,
-          codexTokenUsage: asRecord(asRecord(payload["info"])?.["last_token_usage"]) ?? {},
+          ...(rawUsage ? { codexTokenUsage: rawUsage } : {}),
           ...(rateLimits ? { codexRateLimits: rateLimits } : {}),
         };
+      } else if (usage) {
+        unattributedUsage = addUnattributedUsage(unattributedUsage, usage);
       }
       continue;
     }
@@ -284,7 +291,14 @@ export function importFromCodex(
     source: "codex",
     sourceVersion: cliVersion,
     cwd,
-    ...(lastRateLimits ? { custom: { codexRateLimits: lastRateLimits } } : {}),
+    ...(lastRateLimits || unattributedUsage
+      ? {
+          custom: {
+            ...(lastRateLimits ? { codexRateLimits: lastRateLimits } : {}),
+            ...(unattributedUsage ? { codexUnattributedUsage: unattributedUsage } : {}),
+          },
+        }
+      : {}),
   };
 
   return {
@@ -298,22 +312,16 @@ export function importFromCodex(
 }
 
 function extractTokenUsage(payload: Record<string, unknown>): TokenUsage | undefined {
-  const lastUsage = asRecord(asRecord(payload["info"])?.["last_token_usage"]);
+  const lastUsage = extractRawTokenUsage(payload);
   if (!lastUsage) return undefined;
-  const inputTokens = nonnegativeInteger(lastUsage["input_tokens"]);
-  const cachedInputTokens = nonnegativeInteger(lastUsage["cached_input_tokens"]);
-  const cacheWriteInputTokens = nonnegativeInteger(lastUsage["cache_write_input_tokens"]);
-  const outputTokens = nonnegativeInteger(lastUsage["output_tokens"]);
-  const reasoningTokens = nonnegativeInteger(lastUsage["reasoning_output_tokens"]);
-  if (
-    inputTokens === undefined ||
-    cachedInputTokens === undefined ||
-    cacheWriteInputTokens === undefined ||
-    outputTokens === undefined ||
-    reasoningTokens === undefined
-  ) {
-    return undefined;
-  }
+  const hasInputTokens = nonnegativeInteger(lastUsage["input_tokens"]) !== undefined;
+  const hasOutputTokens = nonnegativeInteger(lastUsage["output_tokens"]) !== undefined;
+  if (!hasInputTokens && !hasOutputTokens) return undefined;
+  const inputTokens = nonnegativeInteger(lastUsage["input_tokens"]) ?? 0;
+  const cachedInputTokens = nonnegativeInteger(lastUsage["cached_input_tokens"]) ?? 0;
+  const cacheWriteInputTokens = nonnegativeInteger(lastUsage["cache_write_input_tokens"]) ?? 0;
+  const outputTokens = nonnegativeInteger(lastUsage["output_tokens"]) ?? 0;
+  const reasoningTokens = nonnegativeInteger(lastUsage["reasoning_output_tokens"]) ?? 0;
   return {
     inputTokens: Math.max(0, inputTokens - cachedInputTokens - cacheWriteInputTokens),
     outputTokens,
@@ -323,14 +331,36 @@ function extractTokenUsage(payload: Record<string, unknown>): TokenUsage | undef
   };
 }
 
+function extractRawTokenUsage(payload: Record<string, unknown>): Record<string, unknown> | undefined {
+  return asRecord(asRecord(payload["info"])?.["last_token_usage"]);
+}
+
+interface CodexUnattributedUsage extends TokenUsage {
+  events: number;
+}
+
+function addUnattributedUsage(
+  current: CodexUnattributedUsage | undefined,
+  usage: TokenUsage,
+): CodexUnattributedUsage {
+  return {
+    inputTokens: (current?.inputTokens ?? 0) + usage.inputTokens,
+    outputTokens: (current?.outputTokens ?? 0) + usage.outputTokens,
+    reasoningTokens: (current?.reasoningTokens ?? 0) + (usage.reasoningTokens ?? 0),
+    cacheReadTokens: (current?.cacheReadTokens ?? 0) + (usage.cacheReadTokens ?? 0),
+    cacheWriteTokens: (current?.cacheWriteTokens ?? 0) + (usage.cacheWriteTokens ?? 0),
+    events: (current?.events ?? 0) + 1,
+  };
+}
+
 function nonnegativeInteger(value: unknown): number | undefined {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
 }
 
-function findAssistantWithoutUsage(messages: Message[]): AssistantMessage | undefined {
+function findLatestAssistant(messages: Message[]): AssistantMessage | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
-    if (message?.role === "assistant" && message.usage === undefined) return message;
+    if (message?.role === "assistant") return message;
   }
   return undefined;
 }

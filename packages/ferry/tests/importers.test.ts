@@ -139,62 +139,97 @@ describe("codex importer", () => {
     expect(text).not.toContain("opaque-not-imported");
   });
 
-  it("attaches per-turn token counts, preserves raw quota, and snapshots the latest quota", () => {
+  it("normalizes modern and historical token counts and preserves their complete raw metadata", () => {
     const first = thread.messages[1];
     const second = thread.messages[5];
     if (first?.role !== "assistant" || second?.role !== "assistant") {
       throw new Error("expected assistant messages");
     }
     expect(first.usage).toEqual({
-      inputTokens: 990,
-      outputTokens: 100,
-      reasoningTokens: 50,
-      cacheReadTokens: 200,
-      cacheWriteTokens: 10,
+      inputTokens: 4918,
+      outputTokens: 249,
+      reasoningTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
     });
     expect(second.usage).toEqual({
-      inputTokens: 480,
-      outputTokens: 80,
+      inputTokens: 20706,
+      outputTokens: 217,
       reasoningTokens: 20,
-      cacheReadTokens: 100,
-      cacheWriteTokens: 20,
+      cacheReadTokens: 9600,
+      cacheWriteTokens: 0,
     });
-    expect(first.metadata?.codexTokenUsage).toMatchObject({ input_tokens: 1200 });
-    expect(first.metadata?.codexRateLimits).toMatchObject({
-      plan_type: "pro",
-      primary: { used_percent: 4 },
+    expect(first.metadata?.codexTokenUsage).toEqual({
+      input_tokens: 4918,
+      cached_input_tokens: 0,
+      cache_write_input_tokens: 0,
+      output_tokens: 249,
+      reasoning_output_tokens: 0,
+      total_tokens: 5167,
     });
-    expect(thread.metadata?.custom?.codexRateLimits).toMatchObject({
-      plan_type: "pro",
-      primary: { used_percent: 5 },
+    expect(second.metadata?.codexTokenUsage).toEqual({
+      input_tokens: 30306,
+      cached_input_tokens: 9600,
+      output_tokens: 217,
+      reasoning_output_tokens: 20,
+      total_tokens: 30523,
+    });
+    expect(first.metadata?.codexRateLimits).toEqual({
+      limit_id: "codex",
+      limit_name: null,
+      primary: null,
+      secondary: null,
+      credits: null,
+      individual_limit: null,
+      spend_control_reached: null,
+      plan_type: null,
+      rate_limit_reached_type: null,
+    });
+    expect(thread.metadata?.custom?.codexRateLimits).toEqual({
+      limit_id: "codex",
+      limit_name: null,
+      primary: { used_percent: 0, window_minutes: 300, resets_at: 1774689802 },
+      secondary: { used_percent: 0, window_minutes: 10080, resets_at: 1775276602 },
+      credits: null,
+      plan_type: "plus",
     });
   });
 
-  it("does not fabricate an assistant for a token count before any assistant output", () => {
-    const beforeAssistant = importFromCodex(
-      [
-        '{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0}}}}',
-        '{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Hi"}]}}',
-        '{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello"}]}}',
-      ].join("\n"),
-    );
-    expect(beforeAssistant.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
-    const assistant = beforeAssistant.messages[1];
+  it("rolls up distinct forked token counts that precede any imported assistant", () => {
+    const forked = importFromCodex(fixture("codex-forked-rollout.jsonl"));
+    expect(forked.metadata?.custom?.codexUnattributedUsage).toEqual({
+      inputTokens: 27980,
+      outputTokens: 444,
+      reasoningTokens: 102,
+      cacheReadTokens: 20224,
+      cacheWriteTokens: 0,
+      events: 2,
+    });
+    const assistant = forked.messages[0];
     if (assistant?.role !== "assistant") throw new Error("expected assistant");
     expect(assistant.usage).toBeUndefined();
   });
 
-  it("keeps the first usage when repeated token counts have no new assistant message", () => {
-    const repeatedTokenCount = importFromCodex(
-      [
-        '{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello"}]}}',
-        '{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0}}}}',
-        '{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":2,"reasoning_output_tokens":0}}}}',
-      ].join("\n"),
-    );
-    const assistant = repeatedTokenCount.messages[0];
-    if (assistant?.role !== "assistant") throw new Error("expected assistant");
-    expect(assistant.usage).toMatchObject({ inputTokens: 10, outputTokens: 1 });
+  it("does not misattribute a second token count after the latest assistant already has usage", () => {
+    const [firstCount, secondCount, assistant] = fixture("codex-forked-rollout.jsonl").trim().split("\n");
+    const repeated = importFromCodex([assistant, firstCount, secondCount].join("\n"));
+    const importedAssistant = repeated.messages[0];
+    if (importedAssistant?.role !== "assistant") throw new Error("expected assistant");
+    expect(importedAssistant.usage).toEqual({
+      inputTokens: 21293,
+      outputTokens: 182,
+      reasoningTokens: 39,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
+    expect(repeated.metadata?.custom?.codexUnattributedUsage).toEqual({
+      inputTokens: 6687,
+      outputTokens: 262,
+      reasoningTokens: 63,
+      cacheReadTokens: 20224,
+      cacheWriteTokens: 0,
+      events: 1,
+    });
   });
 
   it("throws when no response items exist", () => {
