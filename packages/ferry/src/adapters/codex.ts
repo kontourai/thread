@@ -19,15 +19,30 @@
  * - `agent_message` items (inter-agent traffic) and `tool_search_*` items are
  *   skipped.
  * - `reasoning.encrypted_content` is dropped; only summary text is kept.
+ * - Codex `last_token_usage.input_tokens` includes cached reads (observed:
+ *   98/98 cumulative-delta-consistent samples) and is normalized to exclusive
+ *   `usage.inputTokens` by subtracting cached reads. Cache-write subtraction
+ *   is an assumption pending a real nonzero observation; the unmodified source
+ *   object remains in `metadata.codexTokenUsage`.
+ * - `token_count` carries no message id. Its usage and rate limits attach only
+ *   to the first usage-less imported assistant emitted after the preceding
+ *   token count. When none has appeared yet, the count is held for the next
+ *   assistant; superseded or terminal held counts are retained in the
+ *   thread-level `codexUnattributedUsage` rollup. The last observed
+ *   `rate_limits` is also retained as the
+ *   point-in-time `metadata.custom.codexRateLimits` thread snapshot.
+ * - `agent_message` events are deliberately unimported (separate issue).
  */
 
 import { z } from "zod";
 import type {
   AssistantContent,
+  AssistantMessage,
   ContentPart,
   Message,
   Thread,
   ThreadMetadata,
+  TokenUsage,
 } from "@kontourai/thread";
 import { THREAD_SCHEMA_VERSION } from "@kontourai/thread";
 import { asRecord, parseTimestamp, toLines, tryParseJson, type JsonlInput } from "./shared.js";
@@ -62,8 +77,10 @@ export function importFromCodex(
     timestamp: number | undefined;
     payload: Record<string, unknown>;
     model: string | undefined;
+    isTokenCount?: boolean;
   }
   const items: Item[] = [];
+  let responseItemCount = 0;
 
   for (const line of toLines(jsonlContent)) {
     if (!line.trim()) continue;
@@ -94,8 +111,17 @@ export function importFromCodex(
       if (typeof payload["model"] === "string") currentModel = payload["model"];
       continue;
     }
-    if (record.type !== "response_item") continue;
-    items.push({ timestamp: parseTimestamp(record.timestamp), payload, model: currentModel });
+    if (record.type === "response_item") {
+      responseItemCount += 1;
+      items.push({ timestamp: parseTimestamp(record.timestamp), payload, model: currentModel });
+    } else if (record.type === "event_msg" && payload["type"] === "token_count") {
+      items.push({
+        timestamp: parseTimestamp(record.timestamp),
+        payload,
+        model: currentModel,
+        isTokenCount: true,
+      });
+    }
   }
 
   // Items recorded before the first turn_context carry no model; in the
@@ -110,7 +136,7 @@ export function importFromCodex(
   if (skippedLines > 0) {
     options.onWarn?.(`codex: skipped ${skippedLines} unparseable line(s)`);
   }
-  if (items.length === 0) {
+  if (responseItemCount === 0) {
     throw new Error("No Codex response items found in input");
   }
 
@@ -124,9 +150,13 @@ export function importFromCodex(
     timestamp: number | undefined;
     model: string | undefined;
   } | null = null;
+  let lastRateLimits: Record<string, unknown> | undefined;
+  let unattributedUsage: CodexUnattributedUsage | undefined;
+  let previousTokenCountMessageIndex: number | undefined;
+  let heldTokenCount: TokenCount | undefined;
   const flushPending = (): void => {
     if (pending && pending.content.length > 0) {
-      messages.push({
+      const assistant: AssistantMessage = {
         id: nextId(),
         threadId,
         role: "assistant",
@@ -134,7 +164,12 @@ export function importFromCodex(
         content: pending.content,
         model: pending.model,
         provider,
-      });
+      };
+      if (heldTokenCount) {
+        attachTokenCount(assistant, heldTokenCount);
+        heldTokenCount = undefined;
+      }
+      messages.push(assistant);
     }
     pending = null;
   };
@@ -149,7 +184,34 @@ export function importFromCodex(
     pending.content.push(part);
   };
 
-  for (const { timestamp, payload, model } of items) {
+  for (const { timestamp, payload, model, isTokenCount } of items) {
+    if (isTokenCount) {
+      flushPending();
+      const rateLimits = asRecord(payload["rate_limits"]);
+      if (rateLimits) lastRateLimits = rateLimits;
+      const extractedUsage = extractTokenUsage(payload);
+      const rawUsage = extractRawTokenUsage(payload);
+      const tokenCount: TokenCount = {
+        usage: extractedUsage?.usage,
+        rawUsage,
+        rateLimits,
+        inconsistent: extractedUsage?.inconsistent,
+      };
+      const assistant =
+        previousTokenCountMessageIndex === undefined
+          ? undefined
+          : findAssistantWithoutUsage(messages, previousTokenCountMessageIndex);
+      if (assistant) {
+        attachTokenCount(assistant, tokenCount);
+      } else {
+        if (heldTokenCount?.usage) {
+          unattributedUsage = addUnattributedUsage(unattributedUsage, heldTokenCount.usage);
+        }
+        heldTokenCount = tokenCount;
+      }
+      previousTokenCountMessageIndex = messages.length;
+      continue;
+    }
     const type = payload["type"];
 
     if (type === "message") {
@@ -235,6 +297,9 @@ export function importFromCodex(
     // agent_message, tool_search_call/_output and unknown types are skipped.
   }
   flushPending();
+  if (heldTokenCount?.usage) {
+    unattributedUsage = addUnattributedUsage(unattributedUsage, heldTokenCount.usage);
+  }
 
   if (messages.length === 0) {
     throw new Error("Codex input contained no importable messages");
@@ -244,6 +309,14 @@ export function importFromCodex(
     source: "codex",
     sourceVersion: cliVersion,
     cwd,
+    ...(lastRateLimits || unattributedUsage
+      ? {
+          custom: {
+            ...(lastRateLimits ? { codexRateLimits: lastRateLimits } : {}),
+            ...(unattributedUsage ? { codexUnattributedUsage: unattributedUsage } : {}),
+          },
+        }
+      : {}),
   };
 
   return {
@@ -254,6 +327,93 @@ export function importFromCodex(
     createdAt: messages[0]?.timestamp ?? Date.now(),
     updatedAt: messages[messages.length - 1]?.timestamp ?? Date.now(),
   };
+}
+
+interface ExtractedTokenUsage {
+  usage: TokenUsage;
+  inconsistent: boolean;
+}
+
+interface TokenCount {
+  usage: TokenUsage | undefined;
+  rawUsage: Record<string, unknown> | undefined;
+  rateLimits: Record<string, unknown> | undefined;
+  inconsistent: boolean | undefined;
+}
+
+function extractTokenUsage(payload: Record<string, unknown>): ExtractedTokenUsage | undefined {
+  const lastUsage = extractRawTokenUsage(payload);
+  if (!lastUsage) return undefined;
+  const inputTokens = nonnegativeInteger(lastUsage["input_tokens"]);
+  const outputTokens = nonnegativeInteger(lastUsage["output_tokens"]);
+  if (inputTokens === undefined || outputTokens === undefined) return undefined;
+  const cachedInputTokens = nonnegativeInteger(lastUsage["cached_input_tokens"]) ?? 0;
+  const cacheWriteInputTokens = nonnegativeInteger(lastUsage["cache_write_input_tokens"]) ?? 0;
+  const reasoningTokens = nonnegativeInteger(lastUsage["reasoning_output_tokens"]) ?? 0;
+  const exclusiveInputTokens = inputTokens - cachedInputTokens - cacheWriteInputTokens;
+  return {
+    usage: {
+      inputTokens: Math.max(0, exclusiveInputTokens),
+      outputTokens,
+      reasoningTokens,
+      cacheReadTokens: cachedInputTokens,
+      cacheWriteTokens: cacheWriteInputTokens,
+    },
+    inconsistent: exclusiveInputTokens < 0,
+  };
+}
+
+function extractRawTokenUsage(payload: Record<string, unknown>): Record<string, unknown> | undefined {
+  return asRecord(asRecord(payload["info"])?.["last_token_usage"]);
+}
+
+interface CodexUnattributedUsage extends TokenUsage {
+  events: number;
+}
+
+function addUnattributedUsage(
+  current: CodexUnattributedUsage | undefined,
+  usage: TokenUsage,
+): CodexUnattributedUsage {
+  return {
+    inputTokens: (current?.inputTokens ?? 0) + usage.inputTokens,
+    outputTokens: (current?.outputTokens ?? 0) + usage.outputTokens,
+    reasoningTokens: (current?.reasoningTokens ?? 0) + (usage.reasoningTokens ?? 0),
+    cacheReadTokens: (current?.cacheReadTokens ?? 0) + (usage.cacheReadTokens ?? 0),
+    cacheWriteTokens: (current?.cacheWriteTokens ?? 0) + (usage.cacheWriteTokens ?? 0),
+    events: (current?.events ?? 0) + 1,
+  };
+}
+
+function nonnegativeInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+function attachTokenCount(assistant: AssistantMessage, tokenCount: TokenCount): void {
+  if (tokenCount.usage) assistant.usage = tokenCount.usage;
+  assistant.metadata = {
+    ...assistant.metadata,
+    ...(tokenCount.rawUsage
+      ? {
+          codexTokenUsage: {
+            ...tokenCount.rawUsage,
+            ...(tokenCount.inconsistent ? { inconsistent: true } : {}),
+          },
+        }
+      : {}),
+    ...(tokenCount.rateLimits ? { codexRateLimits: tokenCount.rateLimits } : {}),
+  };
+}
+
+function findAssistantWithoutUsage(
+  messages: Message[],
+  fromIndex: number,
+): AssistantMessage | undefined {
+  for (let index = fromIndex; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (message?.role === "assistant" && message.usage === undefined) return message;
+  }
+  return undefined;
 }
 
 function extractMessageParts(content: unknown): ContentPart[] {
