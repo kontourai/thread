@@ -33,25 +33,3 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-
-      # Tags created with a token do not trigger tag-push workflows, so
-      # dispatch the publish pipeline at each newly released component tag
-      # (thread-vX.Y.Z / ferry-vX.Y.Z) explicitly. release-please v4 flattens
-      # per-path outputs as '<path>--tag_name' / '<path>--release_created'.
-      - name: Dispatch publish workflows
-        if: steps.release.outputs.releases_created == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_OUTPUTS: ${{ toJSON(steps.release.outputs) }}
-        run: |
-          node -e "
-            const outputs = JSON.parse(process.env.RELEASE_OUTPUTS);
-            for (const [key, value] of Object.entries(outputs)) {
-              if (!key.endsWith('--tag_name')) continue;
-              const path = key.slice(0, -'--tag_name'.length);
-              if (outputs[path + '--release_created'] !== 'true') continue;
-              console.log(value);
-            }
-          " | while read -r tag; do
-            [ -n "$tag" ] && gh workflow run publish-npm.yml --repo "$GITHUB_REPOSITORY" --ref "$tag"
-          done
