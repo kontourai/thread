@@ -69,7 +69,10 @@ const ConversationEvent = z
                 ephemeral_1h_input_tokens: z.number().int().nonnegative().optional(),
               })
               .optional(),
-            service_tier: z.string().optional(),
+            // Observed Claude Code transcripts emit `null` when the API did
+            // not assign a service tier. It is intentionally not exported as
+            // a pricing extra (assistantUsageExtras only retains strings).
+            service_tier: z.string().nullish(),
             server_tool_use: z
               .object({
                 web_search_requests: z.number().int().nonnegative().optional(),
@@ -410,7 +413,7 @@ function assistantUsageExtras(
     ...(usage.cache_creation?.ephemeral_1h_input_tokens !== undefined
       ? { cacheCreation1h: usage.cache_creation.ephemeral_1h_input_tokens }
       : {}),
-    ...(usage.service_tier !== undefined ? { serviceTier: usage.service_tier } : {}),
+    ...(typeof usage.service_tier === "string" ? { serviceTier: usage.service_tier } : {}),
     ...(requestId !== undefined ? { requestId } : {}),
     ...(usage.server_tool_use !== undefined ? { serverToolUse: usage.server_tool_use } : {}),
   };
