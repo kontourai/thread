@@ -37,11 +37,11 @@ describe("ferry CLI (built binary)", () => {
       join(fixturesDir, "codex-rollout.jsonl"),
     ]);
     expect(out).toBe(
-      "key              messages  noUsage  inputTokens  outputTokens  cacheReadTokens  cacheWriteTokens\n" +
-        "---------------  --------  -------  -----------  ------------  ---------------  ----------------\n" +
-        "claude-sonnet-5  2         0        320          70            80               16\n" +
-        "gpt-5.4-codex    0         2        0            0             0                0\n" +
-        "gpt-5.5          0         1        0            0             0                0\n",
+      "key              messages  noUsage  inputTokens  outputTokens  cacheReadTokens  cacheWriteTokens  reasoningTokens\n" +
+        "---------------  --------  -------  -----------  ------------  ---------------  ----------------  ---------------\n" +
+        "claude-sonnet-5  5         0        1280         187           200              36\n" +
+        "gpt-5.4-codex    1         1        4918         249           0                0                 0\n" +
+        "gpt-5.5          1         0        20706        217           9600             0                 20\n",
     );
   });
 
@@ -85,33 +85,37 @@ describe("ferry CLI (built binary)", () => {
     expect(JSON.parse(out)).toEqual([
       {
         key: "claude-sonnet-5",
-        messages: 2,
+        messages: 5,
         messagesWithoutUsage: 0,
         duplicatesSkipped: 0,
-        inputTokens: 320,
-        outputTokens: 70,
-        cacheReadTokens: 80,
-        cacheWriteTokens: 16,
+        inputTokens: 1280,
+        outputTokens: 187,
+        cacheReadTokens: 200,
+        cacheWriteTokens: 36,
       },
       {
         key: "gpt-5.4-codex",
-        messages: 0,
-        messagesWithoutUsage: 2,
+        messages: 1,
+        messagesWithoutUsage: 1,
         duplicatesSkipped: 0,
-        inputTokens: 0,
-        outputTokens: 0,
+        inputTokens: 4918,
+        outputTokens: 249,
         cacheReadTokens: 0,
         cacheWriteTokens: 0,
+        reasoningTokens: 0,
+        reasoningMessages: 1,
       },
       {
         key: "gpt-5.5",
-        messages: 0,
-        messagesWithoutUsage: 1,
+        messages: 1,
+        messagesWithoutUsage: 0,
         duplicatesSkipped: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheReadTokens: 0,
+        inputTokens: 20706,
+        outputTokens: 217,
+        cacheReadTokens: 9600,
         cacheWriteTokens: 0,
+        reasoningTokens: 20,
+        reasoningMessages: 1,
       },
     ]);
   });
