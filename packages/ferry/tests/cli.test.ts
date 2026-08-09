@@ -45,6 +45,36 @@ describe("ferry CLI (built binary)", () => {
     );
   });
 
+  // Review T-1c: garbage --window fails loudly with a non-zero exit.
+  it("rejects a malformed --window loudly", () => {
+    expect(() =>
+      run(["usage", join(fixturesDir, "claude-code-session.jsonl"), "--window", "30x"]),
+    ).toThrowError(/invalid --window/);
+  });
+
+  // Review T-1d: the table and --json agree on the same corpus — same bucket
+  // keys in the same order, same core counts rendered.
+  it("keeps table and JSON output semantically consistent", () => {
+    const files = [join(fixturesDir, "claude-code-session.jsonl")];
+    const table = run(["usage", ...files]);
+    const buckets = JSON.parse(run(["usage", ...files, "--json"])) as Array<{
+      key: string;
+      messages: number;
+      inputTokens: number;
+      outputTokens: number;
+    }>;
+    const rows = table.trim().split("\n").slice(2);
+    expect(rows.length).toBe(buckets.length);
+    rows.forEach((row, index) => {
+      const cells = row.trim().split(/\s+/);
+      const bucket = buckets[index]!;
+      expect(cells[0]).toBe(bucket.key);
+      expect(Number(cells[1])).toBe(bucket.messages);
+      expect(Number(cells[3])).toBe(bucket.inputTokens);
+      expect(Number(cells[4])).toBe(bucket.outputTokens);
+    });
+  });
+
   it("prints usage buckets as JSON without losing coverage counts", () => {
     const out = run([
       "usage",
@@ -57,6 +87,7 @@ describe("ferry CLI (built binary)", () => {
         key: "claude-sonnet-5",
         messages: 2,
         messagesWithoutUsage: 0,
+        duplicatesSkipped: 0,
         inputTokens: 320,
         outputTokens: 70,
         cacheReadTokens: 80,
@@ -66,6 +97,7 @@ describe("ferry CLI (built binary)", () => {
         key: "gpt-5.4-codex",
         messages: 0,
         messagesWithoutUsage: 2,
+        duplicatesSkipped: 0,
         inputTokens: 0,
         outputTokens: 0,
         cacheReadTokens: 0,
@@ -75,6 +107,7 @@ describe("ferry CLI (built binary)", () => {
         key: "gpt-5.5",
         messages: 0,
         messagesWithoutUsage: 1,
+        duplicatesSkipped: 0,
         inputTokens: 0,
         outputTokens: 0,
         cacheReadTokens: 0,
