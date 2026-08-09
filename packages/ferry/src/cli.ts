@@ -7,7 +7,12 @@ import { createReadStream, readFileSync, statSync, writeFileSync } from "node:fs
 import { createInterface } from "node:readline";
 import { resolve, extname } from "node:path";
 import { Command } from "commander";
-import { getTextContent } from "@kontourai/thread";
+import {
+  aggregateUsage,
+  getTextContent,
+  type UsageAggregationDimension,
+  type UsageBucket,
+} from "@kontourai/thread";
 import {
   exportThread,
   importThreads,
@@ -92,6 +97,45 @@ function numberedPath(output: string, index: number, total: number): string {
   const ext = extname(output);
   const base = ext ? output.slice(0, -ext.length) : output;
   return `${base}-${index + 1}${ext}`;
+}
+
+function parseWindow(window: string | undefined, clock: () => number): number | undefined {
+  if (window === undefined) return undefined;
+  const match = /^(\d+)d$/.exec(window);
+  if (!match) fail(`invalid --window "${window}" (expected <Nd>, for example 30d)`);
+  return clock() - Number(match[1]) * 24 * 60 * 60 * 1000;
+}
+
+function formatUsageTable(buckets: readonly UsageBucket[]): string {
+  const includeReasoning = buckets.some((bucket) => bucket.reasoningTokens !== undefined);
+  const headers = [
+    "key",
+    "messages",
+    "noUsage",
+    "inputTokens",
+    "outputTokens",
+    "cacheReadTokens",
+    "cacheWriteTokens",
+    ...(includeReasoning ? ["reasoningTokens"] : []),
+  ];
+  const rows = buckets.map((bucket) => [
+    bucket.key,
+    String(bucket.messages),
+    String(bucket.messagesWithoutUsage),
+    String(bucket.inputTokens),
+    String(bucket.outputTokens),
+    String(bucket.cacheReadTokens),
+    String(bucket.cacheWriteTokens),
+    ...(includeReasoning ? [bucket.reasoningTokens === undefined ? "" : String(bucket.reasoningTokens)] : []),
+  ]);
+  const widths = headers.map((header, index) =>
+    Math.max(header.length, ...rows.map((row) => row[index]?.length ?? 0)),
+  );
+  const formatRow = (row: readonly string[]): string =>
+    row.map((cell, index) => cell.padEnd(widths[index] ?? 0)).join("  ").trimEnd();
+  return [formatRow(headers), formatRow(widths.map((width) => "-".repeat(width))), ...rows.map(formatRow)].join(
+    "\n",
+  );
 }
 
 program
@@ -188,6 +232,40 @@ program
       }
     });
   });
+
+program
+  .command("usage")
+  .description("Aggregate assistant token usage from conversation files")
+  .argument("<inputs...>", "input file(s)")
+  .option("-f, --from <format>", `input format (auto, ${INPUT_FORMATS.join(", ")})`, "auto")
+  .option("--by <dimension>", "group by model, day, or thread", "model")
+  .option("--window <Nd>", "include messages from the last N days")
+  .option("--json", "print machine-readable JSON")
+  .action(
+    async (
+      inputs: string[],
+      options: { from: string; by: string; window?: string; json?: boolean },
+    ) => {
+      if (!(["model", "day", "thread"] as const).includes(options.by as UsageAggregationDimension)) {
+        fail('invalid --by value (expected "model", "day", or "thread")');
+      }
+      // Read the clock exactly once at the CLI boundary; aggregation remains pure.
+      const now = Date.now();
+      const since = parseWindow(options.window, () => now);
+      const threads = [];
+      for (const file of inputs) {
+        const content = await readInput(file);
+        const from = resolveInputFormat(file, content, options.from);
+        try {
+          threads.push(...importThreads(content, from, { onWarn: warn, sessionId: sessionIdFrom(file) }));
+        } catch (error) {
+          fail(`${file}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      const buckets = aggregateUsage(threads, { by: options.by as UsageAggregationDimension, since });
+      console.log(options.json ? JSON.stringify(buckets, null, 2) : formatUsageTable(buckets));
+    },
+  );
 
 program
   .command("formats")
