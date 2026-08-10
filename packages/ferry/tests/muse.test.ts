@@ -21,6 +21,8 @@ const TOOLS = "muse-session-tools.json";
 /** Read the source events back, so expectations are pinned to the real export. */
 interface SourceEvent {
   kind?: string;
+  /** Present on every real record alongside the envelope's own copy. */
+  recorded_at?: number;
   envelope?: {
     id?: string;
     recorded_at?: number;
@@ -108,7 +110,27 @@ describe("muse importer — multi-turn session", () => {
     const taskOutputs = sourceEvents(CHAT).filter(
       (event) => event.envelope?.payload?.kind === "task",
     );
-    expect(taskOutputs.length).toBeGreaterThan(0);
+    // Pin what the comment claims: the fixture's task event carries the SAME
+    // bytes as the committed batch result. `length > 0` alone stayed green if
+    // the fixture were pruned to a `task.proposed`, removing this test's power.
+    const committedResultText = runEvents(CHAT, "tool_result_batch_committed")
+      .flatMap((e) => (e as { results?: Array<{ text?: string }> }).results ?? [])
+      .map((r) => r.text)
+      .filter((t): t is string => typeof t === "string");
+    // Compare the chunk VALUE, not a re-serialization of the payload:
+    // JSON.stringify would re-escape the inner quotes and never match.
+    const taskOutputText = taskOutputs
+      .map(
+        (t) =>
+          (t.envelope?.payload as { event?: { chunk?: unknown } } | undefined)
+            ?.event?.chunk,
+      )
+      .filter((c): c is string => typeof c === "string")
+      .join("\n");
+    expect(committedResultText.length).toBeGreaterThan(0);
+    expect(
+      committedResultText.some((text) => taskOutputText.includes(text)),
+    ).toBe(true);
     expect(runEvents(CHAT, "assistant_tool_calls_committed")).toHaveLength(1);
 
     const calls = thread.messages
@@ -402,5 +424,63 @@ describe("muse detection", () => {
     const [thread] = importThreads(fixture(TOOLS), "muse");
     expect(thread?.metadata?.source).toBe("muse");
     expect(thread?.messages).toHaveLength(6);
+  });
+});
+
+describe("muse importer — disclosure of dropped records", () => {
+  it("discloses a malformed instance of a kind it maps, instead of silently deleting the message", () => {
+    // A null `text` on a committed assistant message: the message really was
+    // committed, so vanishing it with only a generic warning would misdescribe
+    // the cause.
+    const doc = JSON.parse(fixture(CHAT)) as {
+      events: SourceEvent[];
+    };
+    for (const event of doc.events) {
+      const ev = event.envelope?.payload?.event as
+        | { kind?: string; text?: unknown }
+        | undefined;
+      if (ev?.kind === "assistant_message_committed") ev.text = null;
+    }
+    const warnings: string[] = [];
+    const thread = importFromMuse(JSON.stringify(doc), {
+      onWarn: (m) => warnings.push(m),
+    });
+
+    expect(thread.metadata?.custom?.["museMalformedRunEventsDropped"]).toBe(2);
+    expect(warnings.join("\n")).toContain("did not match this importer's schema");
+  });
+
+  it("discloses usage dropped from a model_completed with no open response", () => {
+    const doc = JSON.parse(fixture(CHAT)) as {
+      events: SourceEvent[];
+    };
+    doc.events = doc.events.filter(
+      (event) =>
+        (event.envelope?.payload?.event as { kind?: string } | undefined)
+          ?.kind !== "model_response_created",
+    );
+    const warnings: string[] = [];
+    const thread = importFromMuse(JSON.stringify(doc), {
+      onWarn: (m) => warnings.push(m),
+    });
+
+    expect(
+      thread.metadata?.custom?.["museOrphanedCompletionsDropped"],
+    ).toBeGreaterThan(0);
+    expect(warnings.join("\n")).toContain("no preceding model_response_created");
+  });
+
+  it("refuses a recorded_at that cannot be microseconds rather than dating it to 1970", () => {
+    const doc = JSON.parse(fixture(CHAT)) as {
+      events: SourceEvent[];
+    };
+    for (const event of doc.events) {
+      // Millisecond-scaled values: /1000 would yield a plausible 1970 date.
+      if (event.envelope) event.envelope.recorded_at = 1786302330746;
+      event.recorded_at = 1786302330746;
+    }
+    const thread = importFromMuse(JSON.stringify(doc));
+    // Falls back to import time rather than claiming 1970.
+    expect(thread.createdAt).toBeGreaterThan(Date.parse("2020-01-01"));
   });
 });

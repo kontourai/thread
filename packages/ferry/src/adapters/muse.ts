@@ -40,7 +40,7 @@
  *   provider-encrypted material, not readable reasoning, and the canonical
  *   `ReasoningPart.signature` is verification material rather than a place to
  *   hide a payload. A reasoning part is emitted only when `text` is non-empty.
- *   Every reasoning event in the probe corpus (6/6) had empty `text`, so the
+ *   Every reasoning event in the probe corpus (8/8) had empty `text`, so the
  *   count of dropped events is disclosed in `metadata.custom` and via `onWarn`.
  * - `model_completed.usage.input_tokens` is inclusive of cache reads (observed:
  *   13/13 samples, where the exclusive remainder tracks prompt growth exactly
@@ -187,9 +187,33 @@ export interface MuseImportOptions {
   onWarn?: (message: string) => void;
 }
 
+/**
+ * `""` is not a usable id. `ToolCallId` is `z.string().min(1)`, and neither
+ * this importer nor `threadToJson` validates on the way out — an empty id
+ * would write a thread file that only fails later, on read.
+ */
+function nonEmpty(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/** Run-event kinds this importer maps; a malformed instance of one is disclosed. */
+const MAPPED_RUN_EVENT_KINDS = new Set([
+  "started",
+  "assistant_message_committed",
+  "assistant_tool_calls_committed",
+  "tool_result_batch_committed",
+  "reasoning_committed",
+  "model_response_created",
+  "model_completed",
+]);
+
 /** `recorded_at` is MICROseconds since the epoch; canonical timestamps are ms. */
 function microsToMillis(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
+  // Guard the unit, not just the type. Dividing a millisecond value by 1000
+  // yields a silently plausible date in 1970 rather than an error, so refuse
+  // anything that cannot be microseconds in a sane range (1980..2100).
+  if (value < 315_360_000_000_000 || value > 4_102_444_800_000_000) return undefined;
   const ms = Math.round(value / 1000);
   return ms > 0 ? ms : undefined;
 }
@@ -243,6 +267,8 @@ export function importFromMuse(jsonContent: string, options: MuseImportOptions =
   let lastTimestamp: number | undefined;
   let gapEvents = 0;
   let encryptedOnlyReasoning = 0;
+  let malformedMappedRunEvents = 0;
+  let orphanedCompletions = 0;
   let undecodableEvents = 0;
 
   /** The response opened by the most recent `model_response_created`. */
@@ -345,13 +371,29 @@ export function importFromMuse(jsonContent: string, options: MuseImportOptions =
     if (payload["kind"] !== "run") continue;
 
     const runEvent = RunEvent.safeParse(payload["event"]);
-    if (!runEvent.success) continue; // unmapped run event kind
+    if (!runEvent.success) {
+      // Two very different cases used to share this branch. A run event kind
+      // this importer does not map is expected and silent; a MALFORMED
+      // instance of a kind it does map is a fidelity loss and must be
+      // disclosed, or a null `text` would delete an assistant message whose
+      // only symptom is a warning that misdescribes the cause. Mirrors
+      // `claude-code.ts`'s skipped-line counting.
+      const kind = asRecord(payload["event"])?.["kind"];
+      if (typeof kind === "string" && MAPPED_RUN_EVENT_KINDS.has(kind)) {
+        malformedMappedRunEvents += 1;
+      }
+      continue;
+    }
     const run = runEvent.data;
     const at = timestamp ?? messages[messages.length - 1]?.timestamp ?? Date.now();
 
     switch (run.kind) {
       case "started": {
         closeOpenAssistants();
+        // A turn boundary closes the open response. Without this, a genuinely
+        // orphaned `model_completed` in a LATER turn would attach to the
+        // previous turn's response id instead of being disclosed as an orphan.
+        openResponseId = undefined;
         if (typeof run.prompt === "string" && run.prompt.length > 0) {
           messages.push({
             id: uniqueId(envelope.id ?? nextId()),
@@ -396,7 +438,7 @@ export function importFromMuse(jsonContent: string, options: MuseImportOptions =
         if (responseId === undefined || run.tool_calls.length === 0) break;
         const message = openAssistant(responseId, at);
         for (const call of run.tool_calls) {
-          const callId = call.call_id ?? call.id ?? nextId();
+          const callId = nonEmpty(call.call_id) ?? nonEmpty(call.id) ?? nextId();
           toolNames.set(callId, call.name);
           const rawArguments = call.args ?? "";
           message.content.push({
@@ -415,10 +457,11 @@ export function importFromMuse(jsonContent: string, options: MuseImportOptions =
       case "tool_result_batch_committed": {
         const toolResults: ToolResult[] = [];
         for (const result of run.results) {
-          if (result.tool_call_id === undefined) continue;
+          const resultCallId = nonEmpty(result.tool_call_id);
+          if (resultCallId === undefined) continue;
           toolResults.push({
-            toolCallId: result.tool_call_id,
-            name: toolNames.get(result.tool_call_id) ?? "",
+            toolCallId: resultCallId,
+            name: toolNames.get(resultCallId) ?? "",
             content: [{ type: "text", text: result.text ?? "" }],
           });
         }
@@ -436,7 +479,14 @@ export function importFromMuse(jsonContent: string, options: MuseImportOptions =
       }
 
       case "model_completed": {
-        if (openResponseId === undefined) break;
+        // The only drop path that used to be undisclosed. Every other one
+        // (gaps, undecodable payloads, encrypted reasoning, pending
+        // completions) is counted and surfaced, and this adapter treats
+        // disclosure as a contract rather than a courtesy.
+        if (openResponseId === undefined) {
+          orphanedCompletions += 1;
+          break;
+        }
         const rawUsage = asRecord(run.usage);
         const completion: ResponseCompletion = {
           usage: rawUsage ? extractUsage(rawUsage) : undefined,
@@ -499,6 +549,18 @@ export function importFromMuse(jsonContent: string, options: MuseImportOptions =
 
   const custom: Record<string, unknown> = {};
   if (encryptedOnlyReasoning > 0) custom["museEncryptedReasoningDropped"] = encryptedOnlyReasoning;
+  if (malformedMappedRunEvents > 0) {
+    custom["museMalformedRunEventsDropped"] = malformedMappedRunEvents;
+    options.onWarn?.(
+      `muse: dropped ${malformedMappedRunEvents} run event(s) whose payload did not match this importer's schema for a kind it maps`,
+    );
+  }
+  if (orphanedCompletions > 0) {
+    custom["museOrphanedCompletionsDropped"] = orphanedCompletions;
+    options.onWarn?.(
+      `muse: dropped usage from ${orphanedCompletions} model_completed event(s) with no preceding model_response_created`,
+    );
+  }
   if (exported.session_terminated_abnormally === true) {
     custom["museSessionTerminatedAbnormally"] = true;
   }
