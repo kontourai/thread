@@ -277,6 +277,7 @@ program
     console.log("  opencode         OpenCode `opencode export` JSON");
     console.log("  kiro             Kiro CLI session JSONL (~/.kiro/sessions/cli/*.jsonl)");
     console.log("  pi               pi session JSONL (~/.pi/agent/sessions/**/*.jsonl)");
+    console.log("  muse             Muse Code `muse export` session JSON");
     console.log("  chatgpt-export   ChatGPT data export (conversations.json)");
     console.log("  thread           @kontourai/thread canonical JSON");
     console.log("");

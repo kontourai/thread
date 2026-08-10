@@ -9,6 +9,7 @@ import { importFromClaudeCode } from "./adapters/claude-code.js";
 import { importFromCodex } from "./adapters/codex.js";
 import { importFromKiro } from "./adapters/kiro.js";
 import { importFromOpenCode } from "./adapters/opencode.js";
+import { importFromMuse } from "./adapters/muse.js";
 import { importFromPi } from "./adapters/pi.js";
 import {
   exportToAnthropicMessages,
@@ -25,6 +26,7 @@ export const INPUT_FORMATS: readonly InputFormat[] = [
   "opencode",
   "kiro",
   "pi",
+  "muse",
   "chatgpt-export",
   "thread",
 ];
@@ -62,6 +64,8 @@ export function importThreads(
       return [importFromKiro(content, { onWarn, sessionId: options.sessionId })];
     case "pi":
       return [importFromPi(content, { onWarn })];
+    case "muse":
+      return [importFromMuse(requireString(content, format), { onWarn })];
     case "chatgpt-export":
       return importFromChatGPTExport(requireString(content, format), { onWarn });
     case "thread":

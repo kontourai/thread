@@ -30,6 +30,13 @@ describe("ferry CLI (built binary)", () => {
     expect(out).toContain("toolCalls: 1");
   });
 
+  it("auto-detects and inspects a muse export", () => {
+    const out = run(["inspect", join(fixturesDir, "muse-session-tools.json")]);
+    expect(out).toContain("format:    muse");
+    expect(out).toContain("messages:  6");
+    expect(out).toContain("toolCalls: 2");
+  });
+
   it("aggregates usage from real Claude Code and Codex transcripts in a table", () => {
     const out = run([
       "usage",

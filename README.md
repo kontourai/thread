@@ -46,7 +46,8 @@ const body = exportToAnthropicMessages(thread);
 
 Input: `claude-code` (session JSONL), `codex` (rollout JSONL), `opencode`
 (`opencode export` JSON), `kiro` (CLI session JSONL), `pi` (session JSONL),
-`chatgpt-export` (`conversations.json`), `thread`.
+`muse` (Muse Code `muse export` JSON), `chatgpt-export` (`conversations.json`),
+`thread`.
 
 Output: `thread` (canonical JSON), `openai-chat`, `anthropic-messages`,
 `gemini`, `markdown`.
