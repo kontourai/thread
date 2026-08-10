@@ -352,13 +352,17 @@ function stepClaude(event: ConversationEvent, state: ClaudeReducerState): void {
  * Hosts pass complete JSONL lines only: ferry deliberately does not retain or
  * reconstruct partial byte records. `pushLines` announcements are append-only;
  * `thread()` is authoritative because a later split record can amend an
- * already announced assistant message. This adapter owns no files, watches,
- * byte offsets, paths, or source handles.
+ * already announced assistant message. A tailing host calls `finalize()` at
+ * EOF, rotation, or close; it flushes any terminal content and announces it
+ * exactly once (Claude Code currently has no separate pending buffer, so it
+ * returns `[]`). This adapter owns no files, watches, byte offsets, paths, or
+ * source handles.
  */
 export type ClaudeCodeImporterState = ClaudeReducerState;
 
 export interface IncrementalImporter<State> {
   pushLines(lines: readonly string[]): Message[];
+  finalize(): Message[];
   state(): State;
   thread(): Thread;
 }
@@ -421,6 +425,7 @@ function claudeImporter(
       if (skipped > 0) onWarn?.(`claude-code: skipped ${skipped} unparseable or unrecognized conversation line(s)`);
       return snapshot.messages.slice(start);
     },
+    finalize: () => [],
     state: () => structuredClone(snapshot),
     thread: current,
   };
@@ -433,6 +438,7 @@ export function importFromClaudeCode(
 ): Thread {
   const importer = createClaudeCodeImporter(options);
   importer.pushLines(toLines(jsonlContent));
+  importer.finalize();
   return importer.thread();
 }
 

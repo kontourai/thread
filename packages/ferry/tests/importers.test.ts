@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   getReasoning,
   getTextContent,
@@ -24,6 +24,15 @@ import {
 
 const fixturesDir = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 const fixture = (name: string): string => readFileSync(join(fixturesDir, name), "utf-8");
+
+function retainsRawJsonlLine(value: unknown, sourceLines: ReadonlySet<string>): boolean {
+  if (typeof value === "string") return sourceLines.has(value);
+  if (Array.isArray(value)) return value.some((item) => retainsRawJsonlLine(item, sourceLines));
+  if (value && typeof value === "object") {
+    return Object.values(value).some((item) => retainsRawJsonlLine(item, sourceLines));
+  }
+  return false;
+}
 
 describe("claude-code importer", () => {
   const thread = importFromClaudeCode(fixture("claude-code-session.jsonl"));
@@ -196,19 +205,26 @@ describe("incremental importers", () => {
   // and a host that snapshots, keeps tailing, then persists later would
   // silently save a NEWER state than it believes, skipping records on resume.
   it.each([
-    ["claude", fixture("claude-code-session.jsonl"), createClaudeCodeImporter],
-    ["codex", fixture("codex-rollout.jsonl"), createCodexImporter],
-  ])("state() returns a detached snapshot, not a live view (%s)", (_, source, create) => {
+    ["claude", fixture("claude-code-session.jsonl"), createClaudeCodeImporter,
+      (state: unknown) => restoreClaudeCodeImporter(state as Parameters<typeof restoreClaudeCodeImporter>[0])],
+    ["codex", fixture("codex-rollout.jsonl"), createCodexImporter,
+      (state: unknown) => restoreCodexImporter(state as Parameters<typeof restoreCodexImporter>[0])],
+  ])("state() returns a detached snapshot, not a live view (%s)", (_, source, create, restoreSnapshot) => {
     const lines = source.trim().split("\n");
     const half = Math.max(1, Math.floor(lines.length / 2));
     const importer = create();
     importer.pushLines(lines.slice(0, half));
-    const snapshot = importer.state() as { messages: unknown[] };
+    const snapshot = importer.state() as { messages: Array<{ id: string }> };
+    const captured = structuredClone(snapshot);
+    const expectedAtSnapshot = importer.thread();
     const messagesAtSnapshot = snapshot.messages.length;
+    snapshot.messages[0]!.id = "mutated-snapshot-id";
+    expect((importer.state() as { messages: Array<{ id: string }> }).messages[0]!.id)
+      .toBe(captured.messages[0]!.id);
     importer.pushLines(lines.slice(half));
     expect(snapshot.messages.length).toBe(messagesAtSnapshot);
     // And the detached snapshot still restores to exactly its own point.
-    expect(importer.state()).not.toBe(snapshot);
+    expect(restoreSnapshot(captured).thread()).toEqual(expectedAtSnapshot);
   });
 
   it.each([
@@ -225,12 +241,53 @@ describe("incremental importers", () => {
       const size = (next() % 7) + 1;
       importer.pushLines(lines.slice(index, index + size));
       const before = importer.state();
-      expect(before).not.toHaveProperty("lines");
+      expect(retainsRawJsonlLine(before, new Set(lines.filter((line) => {
+        try { JSON.parse(line); return true; } catch { return false; }
+      })))).toBe(false);
       expect(importer.thread()).toEqual(importer.thread());
       expect(importer.state()).toEqual(before);
       index += size;
     }
     expect(importer.thread()).toEqual(expected);
+  });
+
+  it("captures a timestamp-less Codex tail at ingest so thread() is pure", () => {
+    const importer = createCodexImporter();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    try {
+      importer.pushLines(['{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"tail"}]}}']);
+      const first = importer.thread();
+      clock.mockReturnValue(2000);
+      expect(importer.thread()).toEqual(first);
+      expect(first.messages[0]?.timestamp).toBe(1000);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("finalizes a pending Codex tail exactly once", () => {
+    const importer = createCodexImporter();
+    const line = '{"timestamp":"2026-08-01T00:00:00.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"tail"}]}}';
+    expect(importer.pushLines([line])).toEqual([]);
+    expect(importer.thread().messages).toHaveLength(1);
+    expect(importer.finalize()).toHaveLength(1);
+    expect(importer.finalize()).toEqual([]);
+    expect(importer.thread().messages).toHaveLength(1);
+  });
+
+  it("reconciles Codex messages when session metadata arrives late", () => {
+    const thread = importFromCodex([
+      '{"timestamp":"2026-08-01T00:00:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"before metadata"}]}}',
+      '{"timestamp":"2026-08-01T00:00:01.000Z","type":"session_meta","payload":{"id":"real-session"}}',
+    ].join("\n"));
+    expect(thread.id).toBe("real-session");
+    expect(thread.messages[0]).toMatchObject({ id: "real-session:1", threadId: "real-session" });
+  });
+
+  it("exposes idempotent finalize() on Claude Code importers", () => {
+    const importer = createClaudeCodeImporter();
+    expect(importer.finalize()).toEqual([]);
+    expect(importer.finalize()).toEqual([]);
   });
 });
 
