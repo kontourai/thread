@@ -4,6 +4,7 @@ export { importFromOpenCode } from "./opencode.js";
 export { importFromChatGPTExport, type ChatGPTImportOptions } from "./chatgpt-export.js";
 export { importFromKiro, type KiroImportOptions } from "./kiro.js";
 export { importFromPi, type PiImportOptions } from "./pi.js";
+export { importFromMuse, type MuseImportOptions } from "./muse.js";
 export { exportToOpenAIChat, type OpenAIChatMessage } from "./openai-chat.js";
 export {
   exportToAnthropicMessages,

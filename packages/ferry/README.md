@@ -12,7 +12,8 @@ ferry formats
 ```
 
 Input formats: `claude-code`, `codex`, `opencode` (`opencode export` JSON),
-`chatgpt-export`, `thread`. Output formats: `thread`, `openai-chat`,
+`kiro`, `pi`, `muse` (Muse Code `muse export` JSON), `chatgpt-export`,
+`thread`. Output formats: `thread`, `openai-chat`,
 `anthropic-messages`, `gemini`, `markdown`.
 
 Importers are grounded in real transcript shapes (including multi-hundred-MB
