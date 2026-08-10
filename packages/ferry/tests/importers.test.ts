@@ -191,6 +191,26 @@ describe("incremental importers", () => {
     expect(restored.thread()).toEqual(expected);
   });
 
+  // A snapshot that keeps mutating is not a snapshot. Every other test
+  // round-trips state() through JSON, which would mask an aliased return —
+  // and a host that snapshots, keeps tailing, then persists later would
+  // silently save a NEWER state than it believes, skipping records on resume.
+  it.each([
+    ["claude", fixture("claude-code-session.jsonl"), createClaudeCodeImporter],
+    ["codex", fixture("codex-rollout.jsonl"), createCodexImporter],
+  ])("state() returns a detached snapshot, not a live view (%s)", (_, source, create) => {
+    const lines = source.trim().split("\n");
+    const half = Math.max(1, Math.floor(lines.length / 2));
+    const importer = create();
+    importer.pushLines(lines.slice(0, half));
+    const snapshot = importer.state() as { messages: unknown[] };
+    const messagesAtSnapshot = snapshot.messages.length;
+    importer.pushLines(lines.slice(half));
+    expect(snapshot.messages.length).toBe(messagesAtSnapshot);
+    // And the detached snapshot still restores to exactly its own point.
+    expect(importer.state()).not.toBe(snapshot);
+  });
+
   it.each([
     ["claude", fixture("claude-code-session.jsonl"), createClaudeCodeImporter, importFromClaudeCode],
     ["codex", fixture("codex-rollout.jsonl"), createCodexImporter, importFromCodex],
