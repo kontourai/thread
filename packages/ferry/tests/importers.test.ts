@@ -311,15 +311,50 @@ describe("incremental importers", () => {
     expect(importer.finalize()).toEqual([]);
   });
 
+  // The class-catcher: every message the consumer was told about must be the
+  // message thread() ends up holding, in the same order, under the same id.
+  // Identity+order only — a full-object compare is NOT a valid invariant here,
+  // because an early Codex assistant can legitimately gain its model in the
+  // thread() finalize pass (backfill) after it was announced.
+  //
+  // The reordered-metadata source is the load-bearing row: it exercises the
+  // DEFERRAL path, so removing deferral makes this test fail rather than
+  // leaving it green (review round 2 note — the first version of this test
+  // only ever saw fixtures whose session_meta came first).
   it.each([
     ["Claude Code", fixture("claude-code-session.jsonl"), createClaudeCodeImporter],
     ["Codex", fixture("codex-rollout.jsonl"), createCodexImporter],
+    ["Codex (identity deferred)", fixture("codex-reordered-metadata.jsonl"), createCodexImporter],
   ])("keeps all %s announcements in final thread order with matching ids", (_, source, create) => {
     const importer = create();
     const announced: Message[] = [];
     for (const line of source.split("\n")) announced.push(...importer.pushLines([line]));
     announced.push(...importer.finalize());
-    expect(announced).toEqual(importer.thread().messages);
+    const identity = (messages: readonly Message[]) =>
+      messages.map((message) => [message.id, message.threadId, message.role]);
+    expect(identity(announced)).toEqual(identity(importer.thread().messages));
+    expect(announced.length).toBeGreaterThan(0);
+    // Agreement alone is not enough: if identity resolution were removed,
+    // announcements and thread() would both carry the FALLBACK id and still
+    // agree. Pin the resolved id too — when the source declares a session,
+    // nothing may be announced under the placeholder.
+    const declaredSession = source
+      .split("\n")
+      .flatMap((line) => {
+        try {
+          const record = JSON.parse(line) as { type?: string; payload?: { id?: string } };
+          return record.type === "session_meta" && record.payload?.id ? [record.payload.id] : [];
+        } catch {
+          return [];
+        }
+      })
+      .at(0);
+    if (declaredSession) {
+      expect(announced.map((message) => message.threadId)).not.toContain("codex-session");
+      expect(new Set(announced.map((message) => message.threadId))).toEqual(
+        new Set([declaredSession]),
+      );
+    }
   });
 
   it("exposes idempotent finalize() on Claude Code importers", () => {
