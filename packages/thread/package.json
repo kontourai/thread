@@ -1,6 +1,6 @@
 {
   "name": "@kontourai/thread",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Canonical AI conversation schema — a portable message format for agent threads",
   "license": "Apache-2.0",
   "type": "module",
@@ -17,7 +17,7 @@
   ],
   "scripts": {
     "build": "rm -rf dist && tsc",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc -p tsconfig.typecheck.json",
     "test": "npm run build && vitest run"
   },
   "keywords": [
@@ -37,11 +37,11 @@
     "node": ">=22"
   },
   "dependencies": {
-    "zod": "^3.23.0"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
-    "typescript": "^5.8.0",
-    "vitest": "^3.0.0"
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
   },
   "publishConfig": {
     "access": "public"

@@ -10,6 +10,7 @@ import {
   threadFromJson,
   threadToJson,
 } from "@kontourai/thread";
+import type { Message } from "@kontourai/thread";
 import {
   importFromChatGPTExport,
   importFromClaudeCode,
@@ -204,14 +205,14 @@ describe("codex importer", () => {
     if (first?.role !== "assistant" || modern?.role !== "assistant" || second?.role !== "assistant") {
       throw new Error("expected assistant messages");
     }
-    expect(first.usage).toBeUndefined();
-    expect(modern.usage).toEqual({
+    expect(first.usage).toEqual({
       inputTokens: 4918,
       outputTokens: 249,
       reasoningTokens: 0,
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
     });
+    expect(modern.usage).toBeUndefined();
     expect(second.usage).toEqual({
       inputTokens: 20706,
       outputTokens: 217,
@@ -219,7 +220,7 @@ describe("codex importer", () => {
       cacheReadTokens: 9600,
       cacheWriteTokens: 0,
     });
-    expect(modern.metadata?.codexTokenUsage).toEqual({
+    expect(first.metadata?.codexTokenUsage).toEqual({
       input_tokens: 4918,
       cached_input_tokens: 0,
       cache_write_input_tokens: 0,
@@ -234,7 +235,7 @@ describe("codex importer", () => {
       reasoning_output_tokens: 20,
       total_tokens: 30523,
     });
-    expect(modern.metadata?.codexRateLimits).toEqual({
+    expect(first.metadata?.codexRateLimits).toEqual({
       limit_id: "codex",
       limit_name: null,
       primary: null,
@@ -255,23 +256,23 @@ describe("codex importer", () => {
     });
   });
 
-  it("attaches the latest forked count to the first assistant and rolls up its superseded predecessor", () => {
+  it("preserves a real June count-agent_message-assistant-count sequence", () => {
     const forked = importFromCodex(fixture("codex-forked-rollout.jsonl"));
     expect(forked.metadata?.custom?.codexUnattributedUsage).toEqual({
-      inputTokens: 21293,
-      outputTokens: 182,
-      reasoningTokens: 39,
-      cacheReadTokens: 0,
+      inputTokens: 377,
+      outputTokens: 18,
+      reasoningTokens: 0,
+      cacheReadTokens: 17408,
       cacheWriteTokens: 0,
       events: 1,
     });
     const assistant = forked.messages[0];
     if (assistant?.role !== "assistant") throw new Error("expected assistant");
     expect(assistant.usage).toEqual({
-      inputTokens: 6687,
-      outputTokens: 262,
-      reasoningTokens: 63,
-      cacheReadTokens: 20224,
+      inputTokens: 271,
+      outputTokens: 54,
+      reasoningTokens: 0,
+      cacheReadTokens: 17408,
       cacheWriteTokens: 0,
     });
   });
@@ -359,40 +360,63 @@ describe("codex importer", () => {
     });
   });
 
-  it("never retroactively attaches a new count to a stale usage-less assistant", () => {
+  it("attaches counts backward within their respective attribution windows", () => {
     const jsonl = [
       '{"timestamp":"2026-06-15T10:00:00.000Z","type":"session_meta","payload":{"id":"stale-count"}}',
-      '{"timestamp":"2026-06-15T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"old pre-format assistant"}]}}',
+      '{"timestamp":"2026-06-15T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"assistant A"}]}}',
       '{"timestamp":"2026-06-15T10:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":20}}}}',
-      '{"timestamp":"2026-06-15T10:00:03.000Z","type":"response_item","payload":{"type":"agent_message","content":[{"type":"output_text","text":"ignored"}]}}',
-      '{"timestamp":"2026-06-15T10:00:04.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"new assistant"}]}}',
+      '{"timestamp":"2026-06-15T10:00:03.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"assistant B"}]}}',
+      '{"timestamp":"2026-06-15T10:00:04.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":200,"output_tokens":40}}}}',
     ].join("\n");
     const imported = importFromCodex(jsonl);
-    const [oldAssistant, newAssistant] = imported.messages;
-    if (oldAssistant?.role !== "assistant" || newAssistant?.role !== "assistant") {
+    const [assistantA, assistantB] = imported.messages;
+    if (assistantA?.role !== "assistant" || assistantB?.role !== "assistant") {
+      throw new Error("expected assistant messages");
+    }
+    expect(assistantA.usage?.inputTokens).toBe(100);
+    expect(assistantB.usage?.inputTokens).toBe(200);
+  });
+
+  it("never crosses count1 to attach count2 to an older assistant", () => {
+    const jsonl = [
+      '{"timestamp":"2026-06-15T10:00:00.000Z","type":"session_meta","payload":{"id":"stale-count"}}',
+      '{"timestamp":"2026-06-15T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"old assistant"}]}}',
+      '{"timestamp":"2026-06-15T10:00:02.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"separates assistant turns"}]}}',
+      '{"timestamp":"2026-06-15T10:00:03.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"count1 recipient"}]}}',
+      '{"timestamp":"2026-06-15T10:00:04.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":20}}}}',
+      '{"timestamp":"2026-06-15T10:00:05.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":200,"output_tokens":40}}}}',
+      '{"timestamp":"2026-06-15T10:00:06.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"held count2 recipient"}]}}',
+    ].join("\n");
+    const imported = importFromCodex(jsonl);
+    const [oldAssistant, count1Recipient, count2Recipient] = imported.messages.filter(
+      (message): message is Extract<Message, { role: "assistant" }> => message.role === "assistant",
+    );
+    if (
+      oldAssistant?.role !== "assistant" ||
+      count1Recipient?.role !== "assistant" ||
+      count2Recipient?.role !== "assistant"
+    ) {
       throw new Error("expected assistant messages");
     }
     expect(oldAssistant.usage).toBeUndefined();
-    expect(newAssistant.usage?.inputTokens).toBe(100);
+    expect(count1Recipient.usage?.inputTokens).toBe(100);
+    expect(count2Recipient.usage?.inputTokens).toBe(200);
   });
 
-  it("imports observed nullable-info, missing-cache-write, and modern rate-limit variants", () => {
+  it("imports observed nullable-info and historical rate-limit variants", () => {
     const variants = importFromCodex(fixture("codex-rollout-variants.jsonl"));
-    expect(variants.messages).toHaveLength(2);
-    const [, missingCacheWrite] = variants.messages;
+    expect(variants.messages).toHaveLength(1);
+    const [missingCacheWrite] = variants.messages;
     if (missingCacheWrite?.role !== "assistant") {
       throw new Error("expected assistant messages");
     }
     expect(variants.metadata?.custom?.codexRateLimits).toEqual({
       limit_id: "codex",
-      limit_name: "weekly",
-      primary: { used_percent: 5, window_minutes: 300, resets_at: 1781517722 },
-      secondary: { used_percent: 10, window_minutes: 10080, resets_at: 1782117722 },
+      limit_name: null,
+      primary: { used_percent: 0, window_minutes: 300, resets_at: 1774689802 },
+      secondary: { used_percent: 0, window_minutes: 10080, resets_at: 1775276602 },
       credits: null,
-      individual_limit: { used_percent: 2, window_minutes: 60, resets_at: 1781503322 },
-      spend_control_reached: false,
-      plan_type: "pro",
-      rate_limit_reached_type: null,
+      plan_type: "plus",
     });
     expect(missingCacheWrite.usage).toEqual({
       inputTokens: 20706,
@@ -425,24 +449,41 @@ describe("codex importer", () => {
       input_tokens: 10,
       cached_input_tokens: 20,
       output_tokens: 5,
-      inconsistent: true,
     });
+    expect(assistant.metadata?.codexTokenUsageInconsistent).toBe(true);
   });
 
-  it("rolls up counts that have no assistant after their preceding count boundary", () => {
-    const [firstCount, secondCount, assistant] = fixture("codex-forked-rollout.jsonl").trim().split("\n");
+  it("rolls up a terminal count with no assistant in its attribution window", () => {
+    const [firstCount, , assistant, secondCount] = fixture("codex-forked-rollout.jsonl").trim().split("\n");
     const repeated = importFromCodex([assistant, firstCount, secondCount].join("\n"));
     const importedAssistant = repeated.messages[0];
     if (importedAssistant?.role !== "assistant") throw new Error("expected assistant");
     expect(repeated.metadata?.custom?.codexUnattributedUsage).toEqual({
-      inputTokens: 27980,
-      outputTokens: 444,
-      reasoningTokens: 102,
-      cacheReadTokens: 20224,
+      inputTokens: 377,
+      outputTokens: 18,
+      reasoningTokens: 0,
+      cacheReadTokens: 17408,
       cacheWriteTokens: 0,
-      events: 2,
+      events: 1,
     });
-    expect(importedAssistant.usage).toBeUndefined();
+    expect(importedAssistant.usage?.inputTokens).toBe(271);
+  });
+
+  it("tolerates a line with no payload key (zod 4 unknown-key regression guard)", () => {
+    // zod 4 made bare `z.unknown()` object keys required AT PARSE TIME.
+    // Without .optional() on RolloutLine.payload this line fails validation
+    // and the whole record is silently counted as skipped.
+    const warnings: string[] = [];
+    const jsonl = [
+      '{"timestamp":"2026-08-01T12:00:00.000Z","type":"session_meta","payload":{"id":"s1","cwd":"/x"}}',
+      '{"timestamp":"2026-08-01T12:00:00.500Z","type":"event_msg"}',
+      '{"timestamp":"2026-08-01T12:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}}',
+    ].join("\n");
+    const thread = importFromCodex(jsonl, { onWarn: (m) => warnings.push(m) });
+    expect(thread.messages).toHaveLength(1);
+    // The payload-less line is recognized and ignored, NOT counted as a
+    // parse failure.
+    expect(warnings).toEqual([]);
   });
 
   it("throws when no importable items exist", () => {
@@ -512,6 +553,27 @@ describe("chatgpt export importer", () => {
     const text = JSON.stringify(thread.messages);
     expect(text).not.toContain("ABANDONED BRANCH");
     expect(text).toContain("feed it twice daily");
+  });
+
+  it("discloses importable messages dropped from alternative branches", () => {
+    const warnings: string[] = [];
+    const withWarnings = importFromChatGPTExport(fixture("chatgpt-conversations.json"), {
+      onWarn: (message) => warnings.push(message),
+    });
+    expect(withWarnings[0]?.metadata?.custom).toEqual({ chatgptAbandonedBranchMessages: 1 });
+    expect(warnings).toEqual([
+      "chatgpt-export: 1 message(s) on alternative branches were not imported (only the canonical path is imported; they remain in the source export)",
+    ]);
+  });
+
+  it("does not record or warn about conversations without alternative branches", () => {
+    const warnings: string[] = [];
+    const [, secondConversation] = JSON.parse(fixture("chatgpt-conversations.json")) as unknown[];
+    const [thread] = importFromChatGPTExport(JSON.stringify(secondConversation), {
+      onWarn: (message) => warnings.push(message),
+    });
+    expect(thread?.metadata?.custom?.["chatgptAbandonedBranchMessages"]).toBeUndefined();
+    expect(warnings).toEqual([]);
   });
 
   it("tolerates a malformed children field without deleting the conversation", () => {

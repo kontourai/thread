@@ -11,6 +11,7 @@ export type InputFormat =
   | "opencode"
   | "kiro"
   | "pi"
+  | "muse"
   | "chatgpt-export"
   | "thread";
 
@@ -63,6 +64,7 @@ export function detectFormat(content: string): InputFormat | undefined {
   const record = asRecord(document);
   if (!record) return undefined;
   if ("mapping" in record) return "chatgpt-export";
+  if (isMuseExport(record)) return "muse";
   if ("schemaVersion" in record && "messages" in record) return "thread";
   if ("messages" in record && Array.isArray(record["messages"])) {
     const first = asRecord(record["messages"][0]);
@@ -91,6 +93,24 @@ function isKiroRecord(record: Record<string, unknown>): boolean {
     typeof record["kind"] === "string" &&
     ["Prompt", "AssistantMessage", "ToolResults", "Compaction"].includes(record["kind"])
   );
+}
+
+/**
+ * Muse Code exports are one JSON document with a numeric `export_schema_version`
+ * and an `events` array whose records carry `envelope.payload_type`. Requiring
+ * the envelope keeps the check from claiming any other document that happens to
+ * have an `events` array; an export with no events at all still identifies by
+ * its `sessions` list.
+ */
+function isMuseExport(record: Record<string, unknown>): boolean {
+  if (typeof record["export_schema_version"] !== "number") return false;
+  const events = record["events"];
+  if (!Array.isArray(events)) return false;
+  for (const event of events) {
+    const envelope = asRecord(asRecord(event)?.["envelope"]);
+    if (envelope && typeof envelope["payload_type"] === "string") return true;
+  }
+  return events.length === 0 && Array.isArray(record["sessions"]);
 }
 
 /** pi lines are {type: session|message|model_change|...}; the header carries cwd+version. */

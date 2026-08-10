@@ -1,14 +1,35 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "release-type": "node",
-  "plugins": ["node-workspace"],
+  "plugins": [
+    "node-workspace"
+  ],
   "changelog-sections": [
-    { "type": "feat", "section": "Features" },
-    { "type": "fix", "section": "Fixes" },
-    { "type": "docs", "section": "Documentation" },
-    { "type": "perf", "section": "Performance" },
-    { "type": "refactor", "section": "Refactoring" },
-    { "type": "chore", "section": "Maintenance", "hidden": true }
+    {
+      "type": "feat",
+      "section": "Features"
+    },
+    {
+      "type": "fix",
+      "section": "Fixes"
+    },
+    {
+      "type": "docs",
+      "section": "Documentation"
+    },
+    {
+      "type": "perf",
+      "section": "Performance"
+    },
+    {
+      "type": "refactor",
+      "section": "Refactoring"
+    },
+    {
+      "type": "chore",
+      "section": "Maintenance",
+      "hidden": true
+    }
   ],
   "packages": {
     "packages/thread": {
@@ -21,5 +42,6 @@
       "package-name": "@kontourai/ferry",
       "include-component-in-tag": true
     }
-  }
+  },
+  "bump-minor-pre-major": true
 }

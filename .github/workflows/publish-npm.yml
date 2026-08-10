@@ -9,9 +9,10 @@ on:
 
 # Serialize publish runs so a duplicate trigger cannot race: the second run
 # waits, then the "Check Published Version" step sees the version already on
-# npm and skips — instead of E403'ing on a double publish.
+# npm and skips — instead of E403'ing on a double publish. Keyed per tag so
+# thread's and ferry's publishes don't queue behind each other.
 concurrency:
-  group: publish-npm
+  group: publish-npm-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -27,12 +28,12 @@ jobs:
       id-token: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
