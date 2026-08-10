@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.0](https://github.com/kontourai/thread/compare/ferry-v0.3.0...ferry-v0.4.0) (2026-08-10)
+
+
+### Features
+
+* **ferry:** import Muse Code session transcripts ([#26](https://github.com/kontourai/thread/issues/26)) ([5fb227c](https://github.com/kontourai/thread/commit/5fb227cc06564638152f7cae33cce1c890ccbbec))
+* **ferry:** incremental importer API — bounded per-record state machines ([#11](https://github.com/kontourai/thread/issues/11)) ([#28](https://github.com/kontourai/thread/issues/28)) ([7958355](https://github.com/kontourai/thread/commit/79583559a147b0c5864aa5cbd44362f175d693c9))
+
+
+### Fixes
+
+* **ferry:** disclose ChatGPT branch loss instead of dropping it silently ([#23](https://github.com/kontourai/thread/issues/23)) ([ade28fb](https://github.com/kontourai/thread/commit/ade28fbeffe43474dcb26e5571dea2643fca4c17))
+* **ferry:** import forked-rollout agent_message/agent_reasoning as messages ([#12](https://github.com/kontourai/thread/issues/12)) ([#27](https://github.com/kontourai/thread/issues/27)) ([a2ebc1a](https://github.com/kontourai/thread/commit/a2ebc1a321b612e89ace0ca9557e0a8117d68f09))
+
 ## [0.3.0](https://github.com/kontourai/thread/compare/ferry-v0.2.0...ferry-v0.3.0) (2026-08-09)
 
 
