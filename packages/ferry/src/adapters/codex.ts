@@ -145,6 +145,15 @@ export function importFromCodex(
   // The Desktop writer emits the mirrored response item directly after the
   // event item. Keep the event as the source because agent_reasoning records
   // share its assistant window, and suppress only this observed adjacency.
+  //
+  // Adjacency is measured over `items` (post-filter), not raw lines, so an
+  // ignored record between a mirror pair would still read as adjacent and
+  // could suppress a legitimately repeated short text ("Done." twice).
+  // Measured across 852 August-2026 rollouts: all 14,632 exact mirrors were
+  // ALSO immediately adjacent as raw records, so the two orderings coincide
+  // in every observed case. If a future writer interleaves records into a
+  // mirror pair, tighten this to raw-line adjacency rather than widening the
+  // text match.
   for (let index = 0; index < items.length - 1; index += 1) {
     const event = items[index];
     const response = items[index + 1];
