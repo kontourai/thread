@@ -76,6 +76,8 @@ export interface CodexImportOptions {
 interface CodexReducerState {
   format: "codex";
   messages: Message[];
+  /** Number of committed messages already announced to the tailing host. */
+  announcedMessageCount?: number;
   syntheticId: number;
   sessionId?: string;
   cwd?: string;
@@ -128,7 +130,6 @@ function codexThread(state: CodexReducerState): Thread {
   }
   if (messages.length === 0) throw new Error("Codex input contained no importable messages");
   const threadId = state.sessionId ?? "codex-session";
-  reconcileCodexMessageIds(messages, threadId);
   return {
     schemaVersion: THREAD_SCHEMA_VERSION, id: threadId, messages,
     metadata: { source: "codex", sourceVersion: state.cliVersion, cwd: state.cwd,
@@ -228,8 +229,11 @@ function flushCodexPending(state: CodexReducerState): void {
   state.pending = null;
 }
 
-function reconcileCodexMessageIds(messages: Message[], threadId: string): void {
-  for (const message of messages) {
+/** Resolve every committed message through the single identity-assignment path. */
+function reconcileCodexStateMessageIds(state: CodexReducerState): void {
+  const threadId = state.sessionId;
+  if (!threadId) return;
+  for (const message of state.messages) {
     const previousThreadId = message.threadId;
     if (previousThreadId === threadId) continue;
     message.threadId = threadId;
@@ -242,8 +246,10 @@ function reconcileCodexMessageIds(messages: Message[], threadId: string): void {
 /** JSON-safe checkpoint for a Codex incremental importer.
  *
  * Hosts pass complete JSONL lines only: ferry does not buffer partial bytes.
- * `pushLines` returns append-only message announcements; a later token_count
- * may add usage to an announced assistant, so `thread()` is authoritative.
+ * `pushLines` returns append-only message announcements. An id is stable from
+ * the moment it is announced: announcements may be deferred until thread
+ * identity resolves, while `thread()` remains authoritative for in-flight
+ * content. A later token_count may add usage to an announced assistant.
  * A tailing host calls `finalize()` at EOF, rotation, or close to commit and
  * announce pending content exactly once; until then, in-flight content is
  * visible only through `thread()`.
@@ -286,7 +292,6 @@ function codexImporter(
   return {
     pushLines(lines) {
       if (lines.length === 0) return [];
-      const start = snapshot.messages.length;
       let skipped = 0;
       for (const line of lines) {
         if (!line.trim()) continue;
@@ -297,12 +302,23 @@ function codexImporter(
         stepCodex(parsed.data, snapshot);
       }
       if (skipped > 0) onWarn?.(`codex: skipped ${skipped} unparseable line(s)`);
-      return snapshot.messages.slice(start);
+      // Do not give a tailing host an id based on the provisional fallback.
+      // A session id resolves all accumulated state messages together.
+      reconcileCodexStateMessageIds(snapshot);
+      if (!snapshot.sessionId) return [];
+      const announcements = snapshot.messages.slice(snapshot.announcedMessageCount ?? 0);
+      snapshot.announcedMessageCount = snapshot.messages.length;
+      return announcements;
     },
     finalize() {
-      const start = snapshot.messages.length;
       flushCodexPending(snapshot);
-      return snapshot.messages.slice(start);
+      // Finalization promises no later input, so the fallback is now a stable
+      // identity just as a session_meta id would be.
+      snapshot.sessionId ??= "codex-session";
+      reconcileCodexStateMessageIds(snapshot);
+      const announcements = snapshot.messages.slice(snapshot.announcedMessageCount ?? 0);
+      snapshot.announcedMessageCount = snapshot.messages.length;
+      return announcements;
     },
     state: () => structuredClone(snapshot),
     thread: current,

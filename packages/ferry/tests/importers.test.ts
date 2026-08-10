@@ -214,13 +214,16 @@ describe("incremental importers", () => {
     const half = Math.max(1, Math.floor(lines.length / 2));
     const importer = create();
     importer.pushLines(lines.slice(0, half));
-    const snapshot = importer.state() as { messages: Array<{ id: string }> };
+    const snapshot = importer.state() as { messages: Array<{ id: string; content?: Array<{ text?: string }> }> };
     const captured = structuredClone(snapshot);
     const expectedAtSnapshot = importer.thread();
     const messagesAtSnapshot = snapshot.messages.length;
     snapshot.messages[0]!.id = "mutated-snapshot-id";
+    snapshot.messages[0]!.content![0]!.text = "mutated nested snapshot text";
     expect((importer.state() as { messages: Array<{ id: string }> }).messages[0]!.id)
       .toBe(captured.messages[0]!.id);
+    expect((importer.state() as { messages: Array<{ content?: Array<{ text?: string }> }> }).messages[0]!.content![0]!.text)
+      .toBe((captured as { messages: Array<{ content?: Array<{ text?: string }> }> }).messages[0]!.content![0]!.text);
     importer.pushLines(lines.slice(half));
     expect(snapshot.messages.length).toBe(messagesAtSnapshot);
     // And the detached snapshot still restores to exactly its own point.
@@ -275,13 +278,48 @@ describe("incremental importers", () => {
     expect(importer.thread().messages).toHaveLength(1);
   });
 
-  it("reconciles Codex messages when session metadata arrives late", () => {
-    const thread = importFromCodex([
-      '{"timestamp":"2026-08-01T00:00:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"before metadata"}]}}',
-      '{"timestamp":"2026-08-01T00:00:01.000Z","type":"session_meta","payload":{"id":"real-session"}}',
-    ].join("\n"));
-    expect(thread.id).toBe("real-session");
-    expect(thread.messages[0]).toMatchObject({ id: "real-session:1", threadId: "real-session" });
+  it("announces reordered Codex messages only after late session metadata assigns final ids", () => {
+    const importer = createCodexImporter();
+    const realFixture = fixture("codex-rollout.jsonl").trim().split("\n");
+    const user = realFixture.find((line) => line.includes('"role":"user"'))!;
+    const sessionMeta = realFixture.find((line) => line.includes('"type":"session_meta"'))!;
+    expect(importer.pushLines([user])).toEqual([]);
+    const announced = importer.pushLines([sessionMeta]);
+    const thread = importer.thread();
+    expect(thread.id).toBe("019f0000-1111-2222-3333-444444444444");
+    expect(thread.messages[0]).toMatchObject({
+      id: "019f0000-1111-2222-3333-444444444444:1",
+      threadId: "019f0000-1111-2222-3333-444444444444",
+    });
+    expect(announced).toEqual(thread.messages);
+  });
+
+  it("defers Codex announcements until session metadata resolves identity", () => {
+    const importer = createCodexImporter();
+    const user = '{"timestamp":"2026-08-01T00:00:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"before metadata"}]}}';
+    const meta = '{"timestamp":"2026-08-01T00:00:01.000Z","type":"session_meta","payload":{"id":"real-session"}}';
+    expect(importer.pushLines([user])).toEqual([]);
+    expect(importer.pushLines([meta])).toEqual([expect.objectContaining({ id: "real-session:1", threadId: "real-session" })]);
+    expect(importer.finalize()).toEqual([]);
+  });
+
+  it("announces never-metadata Codex messages once at finalize with the fallback id", () => {
+    const importer = createCodexImporter();
+    const user = '{"timestamp":"2026-08-01T00:00:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"no metadata"}]}}';
+    expect(importer.pushLines([user])).toEqual([]);
+    expect(importer.finalize()).toEqual([expect.objectContaining({ id: "codex-session:1", threadId: "codex-session" })]);
+    expect(importer.finalize()).toEqual([]);
+  });
+
+  it.each([
+    ["Claude Code", fixture("claude-code-session.jsonl"), createClaudeCodeImporter],
+    ["Codex", fixture("codex-rollout.jsonl"), createCodexImporter],
+  ])("keeps all %s announcements in final thread order with matching ids", (_, source, create) => {
+    const importer = create();
+    const announced: Message[] = [];
+    for (const line of source.split("\n")) announced.push(...importer.pushLines([line]));
+    announced.push(...importer.finalize());
+    expect(announced).toEqual(importer.thread().messages);
   });
 
   it("exposes idempotent finalize() on Claude Code importers", () => {
