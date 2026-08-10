@@ -322,15 +322,25 @@ describe("codex importer", () => {
       events: 1,
     });
     expect(after.metadata?.custom?.codexUnattributedUsage).toBeUndefined();
-    const assistant = after.messages.at(-1);
-    if (assistant?.role !== "assistant") throw new Error("expected assistant");
-    expect(assistant.usage).toEqual({
+    // Attribution follows the real record order in this window: the
+    // token_count sits BETWEEN two agent_message events, so it belongs to the
+    // first one. The trailing agent_message has no count of its own yet and
+    // must stay usage-less — asserting on `.at(-1)` would demand exactly the
+    // forward-misattribution the #8 boundary rule exists to prevent.
+    const assistants = after.messages.filter((m) => m.role === "assistant");
+    expect(assistants).toHaveLength(2);
+    const [counted, trailing] = assistants;
+    if (counted?.role !== "assistant" || trailing?.role !== "assistant") {
+      throw new Error("expected two assistants");
+    }
+    expect(counted.usage).toEqual({
       inputTokens: 21293,
       outputTokens: 182,
       reasoningTokens: 39,
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
     });
+    expect(trailing.usage).toBeUndefined();
   });
 
   it("does not duplicate an immediately mirrored ordinary agent message", () => {
