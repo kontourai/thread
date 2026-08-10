@@ -71,7 +71,149 @@ export interface CodexImportOptions {
   onWarn?: (message: string) => void;
 }
 
-export function importFromCodex(
+interface CodexReducerState {
+  format: "codex";
+  messages: Message[];
+  syntheticId: number;
+  sessionId?: string;
+  cwd?: string;
+  cliVersion?: string;
+  provider?: string;
+  currentModel?: string;
+  importableItemCount: number;
+  skippedLines: number;
+  pending: { content: AssistantContent[]; timestamp?: number; model?: string } | null;
+  heldTokenCount?: TokenCount;
+  previousTokenCountMessageIndex?: number;
+  lastRateLimits?: Record<string, unknown>;
+  unattributedUsage?: CodexUnattributedUsage;
+  duplicateAgentMessageText?: string;
+}
+
+function codexThread(state: CodexReducerState): Thread {
+  if (state.importableItemCount === 0) throw new Error("No Codex importable items found in input");
+  const messages = structuredClone(state.messages);
+  // Pending assistant output is intentionally kept uncommitted in reducer
+  // state so a following record can still join its Responses turn. Finalize
+  // presents it without changing that state.
+  if (state.pending?.content.length) {
+    const pending = structuredClone(state.pending);
+    const threadId = state.sessionId ?? "codex-session";
+    const assistant: AssistantMessage = {
+      id: `${threadId}:${state.syntheticId + 1}`,
+      threadId,
+      role: "assistant",
+      timestamp: pending.timestamp ?? fallbackTimestamp(messages),
+      content: pending.content,
+      model: pending.model,
+      provider: state.provider,
+    };
+    if (state.heldTokenCount) attachTokenCount(assistant, state.heldTokenCount);
+    messages.push(assistant);
+  }
+  // A finalize pass over output, never over input records. It deliberately
+  // works on the clone so repeated or mid-stream thread() calls are pure.
+  const firstKnownModel = messages.find((m) => m.role === "assistant" && m.model !== undefined);
+  if (firstKnownModel?.role === "assistant") {
+    for (const message of messages) {
+      if (message.role !== "assistant") continue;
+      if (message.model !== undefined) break;
+      message.model = firstKnownModel.model;
+    }
+  }
+  let unattributedUsage = state.unattributedUsage;
+  if (!state.pending?.content.length && state.heldTokenCount?.usage) {
+    unattributedUsage = addUnattributedUsage(unattributedUsage, state.heldTokenCount.usage);
+  }
+  if (messages.length === 0) throw new Error("Codex input contained no importable messages");
+  const threadId = state.sessionId ?? "codex-session";
+  return {
+    schemaVersion: THREAD_SCHEMA_VERSION, id: threadId, messages,
+    metadata: { source: "codex", sourceVersion: state.cliVersion, cwd: state.cwd,
+      ...(state.lastRateLimits || unattributedUsage ? { custom: {
+        ...(state.lastRateLimits ? { codexRateLimits: state.lastRateLimits } : {}),
+        ...(unattributedUsage ? { codexUnattributedUsage: unattributedUsage } : {}),
+      } } : {}) },
+    createdAt: messages[0]?.timestamp ?? Date.now(), updatedAt: messages[messages.length - 1]?.timestamp ?? Date.now(),
+  };
+}
+
+function stepCodex(record: z.infer<typeof RolloutLine>, state: CodexReducerState): void {
+  const payload = asRecord(record.payload);
+  if (!payload) { state.duplicateAgentMessageText = undefined; return; }
+  if (record.type === "session_meta") {
+    if (typeof payload["id"] === "string") state.sessionId ??= payload["id"];
+    if (typeof payload["cwd"] === "string") state.cwd ??= payload["cwd"];
+    if (typeof payload["cli_version"] === "string") state.cliVersion ??= payload["cli_version"];
+    if (typeof payload["model_provider"] === "string") state.provider ??= payload["model_provider"];
+    state.duplicateAgentMessageText = undefined; return;
+  }
+  if (record.type === "turn_context") {
+    if (typeof payload["model"] === "string") state.currentModel = payload["model"];
+    state.duplicateAgentMessageText = undefined; return;
+  }
+  const timestamp = parseTimestamp(record.timestamp);
+  const threadId = state.sessionId ?? "codex-session";
+  const nextId = (): string => `${threadId}:${++state.syntheticId}`;
+  const flush = (): void => {
+    const pending = state.pending;
+    if (pending?.content.length) {
+      const assistant: AssistantMessage = { id: nextId(), threadId, role: "assistant",
+        timestamp: pending.timestamp ?? fallbackTimestamp(state.messages), content: pending.content,
+        model: pending.model, provider: state.provider };
+      if (state.heldTokenCount) { attachTokenCount(assistant, state.heldTokenCount); state.heldTokenCount = undefined; }
+      state.messages.push(assistant);
+    }
+    state.pending = null;
+  };
+  const append = (part: AssistantContent): void => {
+    state.pending ??= { content: [], timestamp, model: state.currentModel };
+    state.pending.timestamp ??= timestamp;
+    state.pending.model ??= state.currentModel;
+    state.pending.content.push(part);
+  };
+  if (record.type === "event_msg" && payload["type"] === "token_count") {
+    flush(); const rateLimits = asRecord(payload["rate_limits"]); if (rateLimits) state.lastRateLimits = rateLimits;
+    const extracted = extractTokenUsage(payload);
+    const tokenCount: TokenCount = { usage: extracted?.usage, rawUsage: extractRawTokenUsage(payload), rateLimits, inconsistent: extracted?.inconsistent };
+    const assistant = findAssistantWithoutUsage(state.messages, state.previousTokenCountMessageIndex ?? 0);
+    if (assistant) attachTokenCount(assistant, tokenCount);
+    else { if (state.heldTokenCount?.usage) state.unattributedUsage = addUnattributedUsage(state.unattributedUsage, state.heldTokenCount.usage); state.heldTokenCount = tokenCount; }
+    state.previousTokenCountMessageIndex = state.messages.length; state.duplicateAgentMessageText = undefined; return;
+  }
+  const importable = record.type === "response_item" || (record.type === "event_msg" && (payload["type"] === "agent_message" || payload["type"] === "agent_reasoning"));
+  if (!importable) { state.duplicateAgentMessageText = undefined; return; }
+  state.importableItemCount += 1;
+  const type = payload["type"];
+  const duplicate = state.duplicateAgentMessageText;
+  state.duplicateAgentMessageText = type === "agent_message" && typeof payload["message"] === "string" ? payload["message"] : undefined;
+  if (type === "message") {
+    const role = payload["role"];
+    const parts = extractMessageParts(payload["content"]).filter((p) => p.type !== "text" || p.text !== duplicate);
+    if (!parts.length) return;
+    if (role === "assistant") for (const part of parts) {
+      if (part.type === "text") append({ type: "text", text: part.text });
+      else if (part.type === "image") append({ type: "image", image: part });
+    }
+    else { flush(); state.messages.push({ id: nextId(), threadId, role: role === "system" ? "system" : "user", timestamp: timestamp ?? fallbackTimestamp(state.messages), content: parts }); }
+  } else if (type === "reasoning") {
+    const texts = (Array.isArray(payload["summary"]) ? payload["summary"] : []).map(asRecord).filter((s): s is Record<string, unknown> => s !== undefined).map((s) => s["text"]).filter((t): t is string => typeof t === "string" && t.length > 0);
+    if (texts.length) append({ type: "reasoning", reasoning: { type: "reasoning", text: texts.join("\n") } });
+  } else if (type === "agent_message" && typeof payload["message"] === "string" && payload["message"].length) append({ type: "text", text: payload["message"] });
+  else if (type === "agent_reasoning" && typeof payload["text"] === "string" && payload["text"].length) append({ type: "reasoning", reasoning: { type: "reasoning", text: payload["text"] } });
+  else if (type === "function_call" || type === "custom_tool_call") {
+    const name = typeof payload["name"] === "string" ? payload["name"] : "unknown";
+    const callId = typeof payload["call_id"] === "string" ? payload["call_id"] : typeof payload["id"] === "string" ? payload["id"] : nextId();
+    const arguments_ = typeof payload["arguments"] === "string" ? payload["arguments"] : typeof payload["input"] === "string" ? payload["input"] : "{}";
+    let parsedArguments: Record<string, unknown> | undefined; if (type === "function_call") { try { parsedArguments = asRecord(JSON.parse(arguments_)); } catch { /* deliberate */ } }
+    append({ type: "tool_call", toolCall: { id: callId, name, arguments: arguments_, parsedArguments } });
+  } else if (type === "function_call_output" || type === "custom_tool_call_output") {
+    flush(); const callId = typeof payload["call_id"] === "string" ? payload["call_id"] : nextId();
+    state.messages.push({ id: nextId(), threadId, role: "tool", timestamp: timestamp ?? fallbackTimestamp(state.messages), toolResults: [{ toolCallId: callId, name: "", content: [{ type: "text", text: extractOutputText(payload["output"]) }] }] });
+  }
+}
+
+function importFromCodexCore(
   jsonlContent: JsonlInput,
   options: CodexImportOptions = {},
 ): Thread {
@@ -394,6 +536,75 @@ export function importFromCodex(
     createdAt: messages[0]?.timestamp ?? Date.now(),
     updatedAt: messages[messages.length - 1]?.timestamp ?? Date.now(),
   };
+}
+
+/** JSON-safe checkpoint for a Codex incremental importer.
+ *
+ * Hosts pass complete JSONL lines only: ferry does not buffer partial bytes.
+ * `pushLines` returns append-only message announcements; a later token_count
+ * may add usage to an announced assistant, so `thread()` is authoritative.
+ * This adapter performs no file watching, offset tracking, path handling, or
+ * filesystem access.
+ */
+export type CodexImporterState = CodexReducerState;
+
+export interface CodexIncrementalImporter {
+  pushLines(lines: readonly string[]): Message[];
+  state(): CodexImporterState;
+  thread(): Thread;
+}
+
+export function createCodexImporter(
+  options: CodexImportOptions = {},
+): CodexIncrementalImporter {
+  return codexImporter({
+    format: "codex", messages: [], syntheticId: 0, importableItemCount: 0,
+    skippedLines: 0, pending: null,
+  }, options.onWarn);
+}
+
+export function restoreCodexImporter(
+  state: CodexImporterState,
+  options: Pick<CodexImportOptions, "onWarn"> = {},
+): CodexIncrementalImporter {
+  if (state.format !== "codex") throw new Error("Invalid Codex importer state");
+  return codexImporter(structuredClone(state), options.onWarn);
+}
+
+function codexImporter(
+  snapshot: CodexImporterState,
+  onWarn: CodexImportOptions["onWarn"],
+): CodexIncrementalImporter {
+  const current = (): Thread => codexThread(snapshot);
+  return {
+    pushLines(lines) {
+      if (lines.length === 0) return [];
+      const start = snapshot.messages.length;
+      let skipped = 0;
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let raw: unknown;
+        try { raw = JSON.parse(line); } catch { skipped += 1; continue; }
+        const parsed = RolloutLine.safeParse(raw);
+        if (!parsed.success) { skipped += 1; continue; }
+        stepCodex(parsed.data, snapshot);
+      }
+      if (skipped > 0) onWarn?.(`codex: skipped ${skipped} unparseable line(s)`);
+      return snapshot.messages.slice(start);
+    },
+    state: () => structuredClone(snapshot),
+    thread: current,
+  };
+}
+
+/** One-shot compatibility wrapper over the incremental Codex core. */
+export function importFromCodex(
+  jsonlContent: JsonlInput,
+  options: CodexImportOptions = {},
+): Thread {
+  const importer = createCodexImporter(options);
+  importer.pushLines(toLines(jsonlContent));
+  return importer.thread();
 }
 
 interface ExtractedTokenUsage {

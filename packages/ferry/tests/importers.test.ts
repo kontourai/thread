@@ -16,6 +16,10 @@ import {
   importFromClaudeCode,
   importFromCodex,
   importFromOpenCode,
+  createClaudeCodeImporter,
+  createCodexImporter,
+  restoreClaudeCodeImporter,
+  restoreCodexImporter,
 } from "../src/index.js";
 
 const fixturesDir = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
@@ -146,6 +150,67 @@ describe("claude-code importer", () => {
     expect(() => importFromClaudeCode('{"type":"mode","mode":"default"}')).toThrow(
       /No Claude Code conversation events/,
     );
+  });
+});
+
+describe("incremental importers", () => {
+  const chunks = (source: string, sizes: readonly number[]): string[][] => {
+    const lines = source.split("\n");
+    const result: string[][] = [];
+    let offset = 0;
+    for (const size of sizes) {
+      if (offset >= lines.length) break;
+      result.push(lines.slice(offset, offset + size));
+      offset += size;
+    }
+    if (offset < lines.length) result.push(lines.slice(offset));
+    return result;
+  };
+
+  it("matches one-shot Claude Code imports through varied chunk boundaries and restore", () => {
+    const source = fixture("claude-code-session.jsonl");
+    const expected = importFromClaudeCode(source);
+    const importer = createClaudeCodeImporter();
+    expect(importer.pushLines([])).toEqual([]);
+    const parts = chunks(source, [1, 2, 1, 4, 3, 2, 5]);
+    for (const part of parts.slice(0, 3)) importer.pushLines(part);
+    const restored = restoreClaudeCodeImporter(JSON.parse(JSON.stringify(importer.state())));
+    for (const part of parts.slice(3)) restored.pushLines(part);
+    expect(restored.thread()).toEqual(expected);
+  });
+
+  it("matches one-shot Codex imports through token-count-separated chunks and restore", () => {
+    const source = fixture("codex-forked-rollout-window.jsonl");
+    const expected = importFromCodex(source);
+    const importer = createCodexImporter();
+    expect(importer.pushLines([])).toEqual([]);
+    const parts = chunks(source, [1, 3, 1, 2, 4, 1]);
+    for (const part of parts.slice(0, 2)) importer.pushLines(part);
+    const restored = restoreCodexImporter(JSON.parse(JSON.stringify(importer.state())));
+    for (const part of parts.slice(2)) restored.pushLines(part);
+    expect(restored.thread()).toEqual(expected);
+  });
+
+  it.each([
+    ["claude", fixture("claude-code-session.jsonl"), createClaudeCodeImporter, importFromClaudeCode],
+    ["codex", fixture("codex-rollout.jsonl"), createCodexImporter, importFromCodex],
+  ])("is random-chunk equivalent and has a pure mid-stream thread() (%s)", (_, source, create, oneShot) => {
+    const expected = oneShot(source);
+    const lines = source.split("\n");
+    // Deterministic pseudo-random boundaries make this a regression test.
+    let seed = 0x5eed;
+    const next = (): number => (seed = (seed * 1664525 + 1013904223) >>> 0);
+    const importer = create();
+    for (let index = 0; index < lines.length;) {
+      const size = (next() % 7) + 1;
+      importer.pushLines(lines.slice(index, index + size));
+      const before = importer.state();
+      expect(before).not.toHaveProperty("lines");
+      expect(importer.thread()).toEqual(importer.thread());
+      expect(importer.state()).toEqual(before);
+      index += size;
+    }
+    expect(importer.thread()).toEqual(expected);
   });
 });
 

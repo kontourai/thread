@@ -1,5 +1,19 @@
-export { importFromClaudeCode, type ClaudeCodeImportOptions } from "./claude-code.js";
-export { importFromCodex, type CodexImportOptions } from "./codex.js";
+export {
+  createClaudeCodeImporter,
+  importFromClaudeCode,
+  restoreClaudeCodeImporter,
+  type ClaudeCodeImportOptions,
+  type ClaudeCodeImporterState,
+  type IncrementalImporter,
+} from "./claude-code.js";
+export {
+  createCodexImporter,
+  importFromCodex,
+  restoreCodexImporter,
+  type CodexImportOptions,
+  type CodexImporterState,
+  type CodexIncrementalImporter,
+} from "./codex.js";
 export { importFromOpenCode } from "./opencode.js";
 export { importFromChatGPTExport, type ChatGPTImportOptions } from "./chatgpt-export.js";
 export { importFromKiro, type KiroImportOptions } from "./kiro.js";
