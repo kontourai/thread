@@ -3,11 +3,13 @@
  * Source: ~/.codex/sessions/<yyyy>/<mm>/<dd>/rollout-*.jsonl
  *
  * Each line is `{timestamp: ISO string, type, payload}`. Conversation content
- * lives in `type: "response_item"` payloads:
+ * lives in `type: "response_item"` payloads and `event_msg` payloads:
  * - `message` — user/assistant text (`input_text` / `output_text` parts)
  * - `reasoning` — summary array (+ opaque `encrypted_content`, not imported)
  * - `function_call` / `custom_tool_call` — tool invocations
  * - `function_call_output` / `custom_tool_call_output` — tool results
+ * - `agent_message` — assistant text, including final text in forked runs
+ * - `agent_reasoning` — assistant reasoning text
  * `session_meta` carries the session id, cwd and CLI version; `turn_context`
  * carries the active model.
  *
@@ -16,8 +18,7 @@
  * output items.
  *
  * Known limitations (deliberate):
- * - `agent_message` items (inter-agent traffic) and `tool_search_*` items are
- *   skipped.
+ * - `tool_search_*` items are skipped.
  * - `reasoning.encrypted_content` is dropped; only summary text is kept.
  * - Codex `last_token_usage.input_tokens` includes cached reads (observed:
  *   98/98 cumulative-delta-consistent samples) and is normalized to exclusive
@@ -31,7 +32,13 @@
  *   thread-level `codexUnattributedUsage` rollup. The last observed
  *   `rate_limits` is also retained as the
  *   point-in-time `metadata.custom.codexRateLimits` thread snapshot.
- * - `agent_message` events are deliberately unimported (separate issue).
+ * - Codex Desktop mirrors an `event_msg.agent_message` into an immediately
+ *   following assistant `response_item` with byte-identical `output_text`
+ *   (observed in the forked 2026-08-01T16-05-24 rollout at lines 183-184,
+ *   and ordinary 2026-08-01T00-12-52 and T00-33-00 rollouts at lines 12-13).
+ *   The event is canonical so its adjacent `agent_reasoning` and token-count
+ *   window remain together; that immediate duplicate response text is skipped.
+ *   Equal text at any other position is retained.
  */
 
 import { z } from "zod";
@@ -78,9 +85,10 @@ export function importFromCodex(
     payload: Record<string, unknown>;
     model: string | undefined;
     isTokenCount?: boolean;
+    duplicateAgentMessageText?: string;
   }
   const items: Item[] = [];
-  let responseItemCount = 0;
+  let importableItemCount = 0;
 
   for (const line of toLines(jsonlContent)) {
     if (!line.trim()) continue;
@@ -112,7 +120,7 @@ export function importFromCodex(
       continue;
     }
     if (record.type === "response_item") {
-      responseItemCount += 1;
+      importableItemCount += 1;
       items.push({ timestamp: parseTimestamp(record.timestamp), payload, model: currentModel });
     } else if (record.type === "event_msg" && payload["type"] === "token_count") {
       items.push({
@@ -121,6 +129,32 @@ export function importFromCodex(
         model: currentModel,
         isTokenCount: true,
       });
+    } else if (
+      record.type === "event_msg" &&
+      (payload["type"] === "agent_message" || payload["type"] === "agent_reasoning")
+    ) {
+      importableItemCount += 1;
+      items.push({ timestamp: parseTimestamp(record.timestamp), payload, model: currentModel });
+    }
+  }
+
+  // The Desktop writer emits the mirrored response item directly after the
+  // event item. Keep the event as the source because agent_reasoning records
+  // share its assistant window, and suppress only this observed adjacency.
+  for (let index = 0; index < items.length - 1; index += 1) {
+    const event = items[index];
+    const response = items[index + 1];
+    if (event?.payload["type"] !== "agent_message" || !response) continue;
+    const text = event.payload["message"];
+    if (typeof text !== "string") continue;
+    if (
+      response.payload["type"] === "message" &&
+      response.payload["role"] === "assistant" &&
+      extractMessageParts(response.payload["content"]).some(
+        (part) => part.type === "text" && part.text === text,
+      )
+    ) {
+      response.duplicateAgentMessageText = text;
     }
   }
 
@@ -136,8 +170,8 @@ export function importFromCodex(
   if (skippedLines > 0) {
     options.onWarn?.(`codex: skipped ${skippedLines} unparseable line(s)`);
   }
-  if (responseItemCount === 0) {
-    throw new Error("No Codex response items found in input");
+  if (importableItemCount === 0) {
+    throw new Error("No Codex importable items found in input");
   }
 
   const threadId = sessionId ?? "codex-session";
@@ -184,7 +218,7 @@ export function importFromCodex(
     pending.content.push(part);
   };
 
-  for (const { timestamp, payload, model, isTokenCount } of items) {
+  for (const { timestamp, payload, model, isTokenCount, duplicateAgentMessageText } of items) {
     if (isTokenCount) {
       flushPending();
       const rateLimits = asRecord(payload["rate_limits"]);
@@ -216,7 +250,9 @@ export function importFromCodex(
 
     if (type === "message") {
       const role = payload["role"];
-      const parts = extractMessageParts(payload["content"]);
+      const parts = extractMessageParts(payload["content"]).filter(
+        (part) => part.type !== "text" || part.text !== duplicateAgentMessageText,
+      );
       if (parts.length === 0) continue;
       if (role === "assistant") {
         for (const part of parts) {
@@ -246,6 +282,20 @@ export function importFromCodex(
       if (texts.length > 0) {
         appendAssistant(
           { type: "reasoning", reasoning: { type: "reasoning", text: texts.join("\n") } },
+          timestamp,
+          model,
+        );
+      }
+    } else if (type === "agent_message") {
+      const text = payload["message"];
+      if (typeof text === "string" && text.length > 0) {
+        appendAssistant({ type: "text", text }, timestamp, model);
+      }
+    } else if (type === "agent_reasoning") {
+      const text = payload["text"];
+      if (typeof text === "string" && text.length > 0) {
+        appendAssistant(
+          { type: "reasoning", reasoning: { type: "reasoning", text } },
           timestamp,
           model,
         );
@@ -294,7 +344,7 @@ export function importFromCodex(
         ],
       });
     }
-    // agent_message, tool_search_call/_output and unknown types are skipped.
+    // tool_search_call/_output and unknown types are skipped.
   }
   flushPending();
   if (heldTokenCount?.usage) {

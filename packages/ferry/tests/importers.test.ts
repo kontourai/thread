@@ -191,7 +191,7 @@ describe("codex importer", () => {
     expect(outputs[1]?.toolResults[0]?.toolCallId).toBe("call_beta");
   });
 
-  it("skips inter-agent chatter and keeps encrypted reasoning out", () => {
+  it("keeps non-event inter-agent chatter skipped and encrypted reasoning out", () => {
     const text = JSON.stringify(thread.messages);
     expect(text).not.toContain("inter-agent chatter");
     expect(text).not.toContain("opaque-not-imported");
@@ -273,6 +273,71 @@ describe("codex importer", () => {
       reasoningTokens: 63,
       cacheReadTokens: 20224,
       cacheWriteTokens: 0,
+    });
+  });
+
+  it("imports forked agent event text and reasoning into an assistant with its token window", () => {
+    const forked = importFromCodex(fixture("codex-forked-agent-events.jsonl"));
+    expect(forked.messages).toHaveLength(1);
+    const assistant = forked.messages[0];
+    if (assistant?.role !== "assistant") throw new Error("expected assistant");
+    expect(assistant.content).toEqual([
+      { type: "reasoning", reasoning: { type: "reasoning", text: "[redacted]" } },
+      { type: "text", text: "[redacted]" },
+    ]);
+    expect(assistant.usage).toEqual({
+      inputTokens: 3945,
+      outputTokens: 310,
+      reasoningTokens: 29,
+      cacheReadTokens: 26368,
+      cacheWriteTokens: 0,
+    });
+    expect(forked.metadata?.custom?.codexUnattributedUsage).toEqual({
+      inputTokens: 10474,
+      outputTokens: 512,
+      reasoningTokens: 218,
+      cacheReadTokens: 29440,
+      cacheWriteTokens: 0,
+      events: 1,
+    });
+  });
+
+  it("shrinks forked-rollout unattributed usage when agent events are attachment targets", () => {
+    const source = fixture("codex-forked-rollout-window.jsonl");
+    const before = importFromCodex(
+      source
+        .trim()
+        .split("\n")
+        .filter((line) => !["agent_message", "agent_reasoning"].includes(JSON.parse(line).payload?.type))
+        .join("\n"),
+    );
+    const after = importFromCodex(source);
+    expect(before.metadata?.custom?.codexUnattributedUsage).toEqual({
+      inputTokens: 21293,
+      outputTokens: 182,
+      reasoningTokens: 39,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      events: 1,
+    });
+    expect(after.metadata?.custom?.codexUnattributedUsage).toBeUndefined();
+    const assistant = after.messages.at(-1);
+    if (assistant?.role !== "assistant") throw new Error("expected assistant");
+    expect(assistant.usage).toEqual({
+      inputTokens: 21293,
+      outputTokens: 182,
+      reasoningTokens: 39,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
+  });
+
+  it("does not duplicate an immediately mirrored ordinary agent message", () => {
+    const imported = importFromCodex(fixture("codex-ordinary-agent-message.jsonl"));
+    expect(imported.messages).toHaveLength(1);
+    expect(imported.messages[0]).toMatchObject({
+      role: "assistant",
+      content: [{ type: "text", text: "[redacted]" }],
     });
   });
 
@@ -380,9 +445,9 @@ describe("codex importer", () => {
     expect(importedAssistant.usage).toBeUndefined();
   });
 
-  it("throws when no response items exist", () => {
+  it("throws when no importable items exist", () => {
     expect(() => importFromCodex('{"type":"event_msg","payload":{"type":"noise"}}')).toThrow(
-      /No Codex response items/,
+      /No Codex importable items/,
     );
   });
 });
