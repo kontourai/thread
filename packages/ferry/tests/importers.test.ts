@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   getReasoning,
   getTextContent,
@@ -16,10 +16,23 @@ import {
   importFromClaudeCode,
   importFromCodex,
   importFromOpenCode,
+  createClaudeCodeImporter,
+  createCodexImporter,
+  restoreClaudeCodeImporter,
+  restoreCodexImporter,
 } from "../src/index.js";
 
 const fixturesDir = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 const fixture = (name: string): string => readFileSync(join(fixturesDir, name), "utf-8");
+
+function retainsRawJsonlLine(value: unknown, sourceLines: ReadonlySet<string>): boolean {
+  if (typeof value === "string") return sourceLines.has(value);
+  if (Array.isArray(value)) return value.some((item) => retainsRawJsonlLine(item, sourceLines));
+  if (value && typeof value === "object") {
+    return Object.values(value).some((item) => retainsRawJsonlLine(item, sourceLines));
+  }
+  return false;
+}
 
 describe("claude-code importer", () => {
   const thread = importFromClaudeCode(fixture("claude-code-session.jsonl"));
@@ -146,6 +159,208 @@ describe("claude-code importer", () => {
     expect(() => importFromClaudeCode('{"type":"mode","mode":"default"}')).toThrow(
       /No Claude Code conversation events/,
     );
+  });
+});
+
+describe("incremental importers", () => {
+  const chunks = (source: string, sizes: readonly number[]): string[][] => {
+    const lines = source.split("\n");
+    const result: string[][] = [];
+    let offset = 0;
+    for (const size of sizes) {
+      if (offset >= lines.length) break;
+      result.push(lines.slice(offset, offset + size));
+      offset += size;
+    }
+    if (offset < lines.length) result.push(lines.slice(offset));
+    return result;
+  };
+
+  it("matches one-shot Claude Code imports through varied chunk boundaries and restore", () => {
+    const source = fixture("claude-code-session.jsonl");
+    const expected = importFromClaudeCode(source);
+    const importer = createClaudeCodeImporter();
+    expect(importer.pushLines([])).toEqual([]);
+    const parts = chunks(source, [1, 2, 1, 4, 3, 2, 5]);
+    for (const part of parts.slice(0, 3)) importer.pushLines(part);
+    const restored = restoreClaudeCodeImporter(JSON.parse(JSON.stringify(importer.state())));
+    for (const part of parts.slice(3)) restored.pushLines(part);
+    expect(restored.thread()).toEqual(expected);
+  });
+
+  it("matches one-shot Codex imports through token-count-separated chunks and restore", () => {
+    const source = fixture("codex-forked-rollout-window.jsonl");
+    const expected = importFromCodex(source);
+    const importer = createCodexImporter();
+    expect(importer.pushLines([])).toEqual([]);
+    const parts = chunks(source, [1, 3, 1, 2, 4, 1]);
+    for (const part of parts.slice(0, 2)) importer.pushLines(part);
+    const restored = restoreCodexImporter(JSON.parse(JSON.stringify(importer.state())));
+    for (const part of parts.slice(2)) restored.pushLines(part);
+    expect(restored.thread()).toEqual(expected);
+  });
+
+  // A snapshot that keeps mutating is not a snapshot. Every other test
+  // round-trips state() through JSON, which would mask an aliased return —
+  // and a host that snapshots, keeps tailing, then persists later would
+  // silently save a NEWER state than it believes, skipping records on resume.
+  it.each([
+    ["claude", fixture("claude-code-session.jsonl"), createClaudeCodeImporter,
+      (state: unknown) => restoreClaudeCodeImporter(state as Parameters<typeof restoreClaudeCodeImporter>[0])],
+    ["codex", fixture("codex-rollout.jsonl"), createCodexImporter,
+      (state: unknown) => restoreCodexImporter(state as Parameters<typeof restoreCodexImporter>[0])],
+  ])("state() returns a detached snapshot, not a live view (%s)", (_, source, create, restoreSnapshot) => {
+    const lines = source.trim().split("\n");
+    const half = Math.max(1, Math.floor(lines.length / 2));
+    const importer = create();
+    importer.pushLines(lines.slice(0, half));
+    const snapshot = importer.state() as { messages: Array<{ id: string; content?: Array<{ text?: string }> }> };
+    const captured = structuredClone(snapshot);
+    const expectedAtSnapshot = importer.thread();
+    const messagesAtSnapshot = snapshot.messages.length;
+    snapshot.messages[0]!.id = "mutated-snapshot-id";
+    snapshot.messages[0]!.content![0]!.text = "mutated nested snapshot text";
+    expect((importer.state() as { messages: Array<{ id: string }> }).messages[0]!.id)
+      .toBe(captured.messages[0]!.id);
+    expect((importer.state() as { messages: Array<{ content?: Array<{ text?: string }> }> }).messages[0]!.content![0]!.text)
+      .toBe((captured as { messages: Array<{ content?: Array<{ text?: string }> }> }).messages[0]!.content![0]!.text);
+    importer.pushLines(lines.slice(half));
+    expect(snapshot.messages.length).toBe(messagesAtSnapshot);
+    // And the detached snapshot still restores to exactly its own point.
+    expect(restoreSnapshot(captured).thread()).toEqual(expectedAtSnapshot);
+  });
+
+  it.each([
+    ["claude", fixture("claude-code-session.jsonl"), createClaudeCodeImporter, importFromClaudeCode],
+    ["codex", fixture("codex-rollout.jsonl"), createCodexImporter, importFromCodex],
+  ])("is random-chunk equivalent and has a pure mid-stream thread() (%s)", (_, source, create, oneShot) => {
+    const expected = oneShot(source);
+    const lines = source.split("\n");
+    // Deterministic pseudo-random boundaries make this a regression test.
+    let seed = 0x5eed;
+    const next = (): number => (seed = (seed * 1664525 + 1013904223) >>> 0);
+    const importer = create();
+    for (let index = 0; index < lines.length;) {
+      const size = (next() % 7) + 1;
+      importer.pushLines(lines.slice(index, index + size));
+      const before = importer.state();
+      expect(retainsRawJsonlLine(before, new Set(lines.filter((line) => {
+        try { JSON.parse(line); return true; } catch { return false; }
+      })))).toBe(false);
+      expect(importer.thread()).toEqual(importer.thread());
+      expect(importer.state()).toEqual(before);
+      index += size;
+    }
+    expect(importer.thread()).toEqual(expected);
+  });
+
+  it("captures a timestamp-less Codex tail at ingest so thread() is pure", () => {
+    const importer = createCodexImporter();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    try {
+      importer.pushLines(['{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"tail"}]}}']);
+      const first = importer.thread();
+      clock.mockReturnValue(2000);
+      expect(importer.thread()).toEqual(first);
+      expect(first.messages[0]?.timestamp).toBe(1000);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("finalizes a pending Codex tail exactly once", () => {
+    const importer = createCodexImporter();
+    const line = '{"timestamp":"2026-08-01T00:00:00.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"tail"}]}}';
+    expect(importer.pushLines([line])).toEqual([]);
+    expect(importer.thread().messages).toHaveLength(1);
+    expect(importer.finalize()).toHaveLength(1);
+    expect(importer.finalize()).toEqual([]);
+    expect(importer.thread().messages).toHaveLength(1);
+  });
+
+  it("announces reordered Codex messages only after late session metadata assigns final ids", () => {
+    const importer = createCodexImporter();
+    const realFixture = fixture("codex-rollout.jsonl").trim().split("\n");
+    const user = realFixture.find((line) => line.includes('"role":"user"'))!;
+    const sessionMeta = realFixture.find((line) => line.includes('"type":"session_meta"'))!;
+    expect(importer.pushLines([user])).toEqual([]);
+    const announced = importer.pushLines([sessionMeta]);
+    const thread = importer.thread();
+    expect(thread.id).toBe("019f0000-1111-2222-3333-444444444444");
+    expect(thread.messages[0]).toMatchObject({
+      id: "019f0000-1111-2222-3333-444444444444:1",
+      threadId: "019f0000-1111-2222-3333-444444444444",
+    });
+    expect(announced).toEqual(thread.messages);
+  });
+
+  it("defers Codex announcements until session metadata resolves identity", () => {
+    const importer = createCodexImporter();
+    const user = '{"timestamp":"2026-08-01T00:00:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"before metadata"}]}}';
+    const meta = '{"timestamp":"2026-08-01T00:00:01.000Z","type":"session_meta","payload":{"id":"real-session"}}';
+    expect(importer.pushLines([user])).toEqual([]);
+    expect(importer.pushLines([meta])).toEqual([expect.objectContaining({ id: "real-session:1", threadId: "real-session" })]);
+    expect(importer.finalize()).toEqual([]);
+  });
+
+  it("announces never-metadata Codex messages once at finalize with the fallback id", () => {
+    const importer = createCodexImporter();
+    const user = '{"timestamp":"2026-08-01T00:00:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"no metadata"}]}}';
+    expect(importer.pushLines([user])).toEqual([]);
+    expect(importer.finalize()).toEqual([expect.objectContaining({ id: "codex-session:1", threadId: "codex-session" })]);
+    expect(importer.finalize()).toEqual([]);
+  });
+
+  // The class-catcher: every message the consumer was told about must be the
+  // message thread() ends up holding, in the same order, under the same id.
+  // Identity+order only — a full-object compare is NOT a valid invariant here,
+  // because an early Codex assistant can legitimately gain its model in the
+  // thread() finalize pass (backfill) after it was announced.
+  //
+  // The reordered-metadata source is the load-bearing row: it exercises the
+  // DEFERRAL path, so removing deferral makes this test fail rather than
+  // leaving it green (review round 2 note — the first version of this test
+  // only ever saw fixtures whose session_meta came first).
+  it.each([
+    ["Claude Code", fixture("claude-code-session.jsonl"), createClaudeCodeImporter],
+    ["Codex", fixture("codex-rollout.jsonl"), createCodexImporter],
+    ["Codex (identity deferred)", fixture("codex-reordered-metadata.jsonl"), createCodexImporter],
+  ])("keeps all %s announcements in final thread order with matching ids", (_, source, create) => {
+    const importer = create();
+    const announced: Message[] = [];
+    for (const line of source.split("\n")) announced.push(...importer.pushLines([line]));
+    announced.push(...importer.finalize());
+    const identity = (messages: readonly Message[]) =>
+      messages.map((message) => [message.id, message.threadId, message.role]);
+    expect(identity(announced)).toEqual(identity(importer.thread().messages));
+    expect(announced.length).toBeGreaterThan(0);
+    // Agreement alone is not enough: if identity resolution were removed,
+    // announcements and thread() would both carry the FALLBACK id and still
+    // agree. Pin the resolved id too — when the source declares a session,
+    // nothing may be announced under the placeholder.
+    const declaredSession = source
+      .split("\n")
+      .flatMap((line) => {
+        try {
+          const record = JSON.parse(line) as { type?: string; payload?: { id?: string } };
+          return record.type === "session_meta" && record.payload?.id ? [record.payload.id] : [];
+        } catch {
+          return [];
+        }
+      })
+      .at(0);
+    if (declaredSession) {
+      expect(announced.map((message) => message.threadId)).not.toContain("codex-session");
+      expect(new Set(announced.map((message) => message.threadId))).toEqual(
+        new Set([declaredSession]),
+      );
+    }
+  });
+
+  it("exposes idempotent finalize() on Claude Code importers", () => {
+    const importer = createClaudeCodeImporter();
+    expect(importer.finalize()).toEqual([]);
+    expect(importer.finalize()).toEqual([]);
   });
 });
 

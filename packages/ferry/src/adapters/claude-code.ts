@@ -148,76 +148,42 @@ function contentPartsFromBlocks(blocks: unknown): ContentPart[] {
   return parts;
 }
 
-export function importFromClaudeCode(
-  jsonlContent: JsonlInput,
-  options: ClaudeCodeImportOptions = {},
-): Thread {
-  const events: ConversationEvent[] = [];
-  let skippedLines = 0;
-  let sessionId: string | undefined;
-  let cwd: string | undefined;
-  let version: string | undefined;
-  let gitBranch: string | undefined;
-  let title: string | undefined;
+interface ClaudeReducerState {
+  format: "claude-code";
+  includeSidechains: boolean;
+  messages: Message[];
+  assistantById: Record<string, number>;
+  syntheticId: number;
+  eventCount: number;
+  skippedLines: number;
+  sessionId?: string;
+  cwd?: string;
+  version?: string;
+  gitBranch?: string;
+  title?: string;
+}
 
-  for (const line of toLines(jsonlContent)) {
-    if (!line.trim()) continue;
-    let raw: unknown;
-    try {
-      raw = JSON.parse(line);
-    } catch {
-      skippedLines += 1;
-      continue; // tolerate truncated/corrupt lines
-    }
-    if (typeof raw !== "object" || raw === null) continue;
-    const record = raw as Record<string, unknown>;
+function claudeThread(state: ClaudeReducerState): Thread {
+  if (state.eventCount === 0) throw new Error("No Claude Code conversation events found in input");
+  if (state.messages.length === 0) throw new Error("Claude Code input contained no importable messages");
+  const messages = structuredClone(state.messages);
+  const threadId = state.sessionId ?? "claude-code-session";
+  return {
+    schemaVersion: THREAD_SCHEMA_VERSION, id: threadId, messages,
+    metadata: { source: "claude-code", sourceVersion: state.version, cwd: state.cwd,
+      title: state.title, git: state.gitBranch ? { branch: state.gitBranch } : undefined },
+    createdAt: messages[0]?.timestamp ?? Date.now(),
+    updatedAt: messages[messages.length - 1]?.timestamp ?? Date.now(),
+  };
+}
 
-    // Bookkeeping events that carry thread-level metadata.
-    if (record["type"] === "ai-title" && typeof record["aiTitle"] === "string") {
-      title = record["aiTitle"];
-      continue;
-    }
-    if (record["type"] === "summary" && typeof record["summary"] === "string") {
-      title ??= record["summary"];
-      continue;
-    }
-
-    const parsed = ConversationEvent.safeParse(raw);
-    if (!parsed.success) {
-      if (record["type"] === "user" || record["type"] === "assistant") skippedLines += 1;
-      continue;
-    }
-    const event = parsed.data;
-
-    if (event.isSidechain && !options.includeSidechains) continue;
-    if (event.isMeta) continue;
-
-    sessionId ??= event.sessionId;
-    cwd ??= event.cwd;
-    version ??= event.version;
-    gitBranch ??= event.gitBranch;
-    events.push(event);
-  }
-
-  if (skippedLines > 0) {
-    options.onWarn?.(
-      `claude-code: skipped ${skippedLines} unparseable or unrecognized conversation line(s)`,
-    );
-  }
-  if (events.length === 0) {
-    throw new Error("No Claude Code conversation events found in input");
-  }
-
-  const threadId = sessionId ?? "claude-code-session";
-  const messages: Message[] = [];
+function stepClaude(event: ConversationEvent, state: ClaudeReducerState): void {
+  const threadId = state.sessionId ?? "claude-code-session";
+  const messages = state.messages;
+  const nextId = (): string => `${threadId}:${++state.syntheticId}`;
   // One API assistant message is split across several JSONL lines sharing
   // message.id; sidechain lines can interleave, so merging is by id lookup,
   // keyed separately per sidechain-ness to keep attribution honest.
-  const assistantById = new Map<string, AssistantMessage>();
-  let syntheticId = 0;
-  const nextId = (): string => `${threadId}:${++syntheticId}`;
-
-  for (const event of events) {
     const timestamp = parseTimestamp(event.timestamp) ?? lastTimestamp(messages) ?? Date.now();
     const apiMessage = event.message;
 
@@ -259,7 +225,7 @@ export function importFromClaudeCode(
           ...(event.isSidechain ? { metadata: { sidechain: true } } : {}),
         });
       }
-      continue;
+      return;
     }
 
     // Assistant: one API message is often split across several JSONL lines
@@ -319,7 +285,7 @@ export function importFromClaudeCode(
       }
       // Other block types (fallback markers, server tool blocks, …) are skipped.
     }
-    if (content.length === 0) continue;
+    if (content.length === 0) return;
 
     const usage = apiMessage.usage;
     const claudeUsageExtras = usage && assistantUsageExtras(usage, event.requestId);
@@ -356,8 +322,9 @@ export function importFromClaudeCode(
       apiMessage.id !== undefined
         ? `${event.isSidechain ? "side:" : "main:"}${apiMessage.id}`
         : undefined;
-    const existing = mergeKey !== undefined ? assistantById.get(mergeKey) : undefined;
-    if (existing !== undefined) {
+    const existingIndex = mergeKey !== undefined ? state.assistantById[mergeKey] : undefined;
+    const existing = existingIndex === undefined ? undefined : messages[existingIndex];
+    if (existing?.role === "assistant") {
       existing.content.push(...content);
       existing.model ??= assistantMessage.model;
       existing.usage = assistantMessage.usage ?? existing.usage;
@@ -376,30 +343,103 @@ export function importFromClaudeCode(
       existing.finishReason = assistantMessage.finishReason ?? existing.finishReason;
     } else {
       messages.push(assistantMessage);
-      if (mergeKey !== undefined) assistantById.set(mergeKey, assistantMessage);
+      if (mergeKey !== undefined) state.assistantById[mergeKey] = messages.length - 1;
     }
-  }
+}
 
-  if (messages.length === 0) {
-    throw new Error("Claude Code input contained no importable messages");
-  }
+/** JSON-safe checkpoint for a Claude Code incremental importer.
+ *
+ * Hosts pass complete JSONL lines only: ferry deliberately does not retain or
+ * reconstruct partial byte records. `pushLines` announcements are append-only;
+ * `thread()` is authoritative because a later split record can amend an
+ * already announced assistant message. A tailing host calls `finalize()` at
+ * EOF, rotation, or close; it flushes any terminal content and announces it
+ * exactly once (Claude Code currently has no separate pending buffer, so it
+ * returns `[]`). This adapter owns no files, watches, byte offsets, paths, or
+ * source handles.
+ */
+export type ClaudeCodeImporterState = ClaudeReducerState;
 
-  const metadata: ThreadMetadata = {
-    source: "claude-code",
-    sourceVersion: version,
-    cwd,
-    title,
-    git: gitBranch ? { branch: gitBranch } : undefined,
-  };
+export interface IncrementalImporter<State> {
+  pushLines(lines: readonly string[]): Message[];
+  finalize(): Message[];
+  state(): State;
+  thread(): Thread;
+}
 
+export function createClaudeCodeImporter(
+  options: ClaudeCodeImportOptions = {},
+): IncrementalImporter<ClaudeCodeImporterState> {
+  return claudeImporter({
+    format: "claude-code",
+    includeSidechains: options.includeSidechains === true,
+    messages: [], assistantById: {}, syntheticId: 0, eventCount: 0, skippedLines: 0,
+  }, options.onWarn);
+}
+
+export function restoreClaudeCodeImporter(
+  state: ClaudeCodeImporterState,
+  options: Pick<ClaudeCodeImportOptions, "onWarn"> = {},
+): IncrementalImporter<ClaudeCodeImporterState> {
+  if (state.format !== "claude-code") throw new Error("Invalid Claude Code importer state");
+  return claudeImporter(structuredClone(state), options.onWarn);
+}
+
+function claudeImporter(
+  snapshot: ClaudeCodeImporterState,
+  onWarn: ClaudeCodeImportOptions["onWarn"],
+): IncrementalImporter<ClaudeCodeImporterState> {
+  const current = (): Thread => claudeThread(snapshot);
   return {
-    schemaVersion: THREAD_SCHEMA_VERSION,
-    id: threadId,
-    messages,
-    metadata,
-    createdAt: messages[0]?.timestamp ?? Date.now(),
-    updatedAt: messages[messages.length - 1]?.timestamp ?? Date.now(),
+    pushLines(lines) {
+      if (lines.length === 0) return [];
+      const start = snapshot.messages.length;
+      let skipped = 0;
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let raw: unknown;
+        try { raw = JSON.parse(line); } catch { skipped += 1; continue; }
+        if (typeof raw !== "object" || raw === null) continue;
+        const record = raw as Record<string, unknown>;
+        if (record["type"] === "ai-title" && typeof record["aiTitle"] === "string") {
+          snapshot.title = record["aiTitle"]; continue;
+        }
+        if (record["type"] === "summary" && typeof record["summary"] === "string") {
+          snapshot.title ??= record["summary"]; continue;
+        }
+        const parsed = ConversationEvent.safeParse(raw);
+        if (!parsed.success) {
+          if (record["type"] === "user" || record["type"] === "assistant") skipped += 1;
+          continue;
+        }
+        const event = parsed.data;
+        if (event.isSidechain && !snapshot.includeSidechains) continue;
+        if (event.isMeta) continue;
+        snapshot.sessionId ??= event.sessionId;
+        snapshot.cwd ??= event.cwd;
+        snapshot.version ??= event.version;
+        snapshot.gitBranch ??= event.gitBranch;
+        snapshot.eventCount += 1;
+        stepClaude(event, snapshot);
+      }
+      if (skipped > 0) onWarn?.(`claude-code: skipped ${skipped} unparseable or unrecognized conversation line(s)`);
+      return snapshot.messages.slice(start);
+    },
+    finalize: () => [],
+    state: () => structuredClone(snapshot),
+    thread: current,
   };
+}
+
+/** One-shot compatibility wrapper over the incremental Claude Code core. */
+export function importFromClaudeCode(
+  jsonlContent: JsonlInput,
+  options: ClaudeCodeImportOptions = {},
+): Thread {
+  const importer = createClaudeCodeImporter(options);
+  importer.pushLines(toLines(jsonlContent));
+  importer.finalize();
+  return importer.thread();
 }
 
 function assistantUsageExtras(
