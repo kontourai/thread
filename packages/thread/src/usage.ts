@@ -1,7 +1,7 @@
 import type { Thread } from "./schema.js";
 
 /** The dimension used to group assistant-message token usage. */
-export type UsageAggregationDimension = "model" | "day" | "thread";
+export type UsageAggregationDimension = "model" | "day" | "thread" | "source";
 
 export interface AggregateUsageOptions {
   /** Defaults to `model`. */
@@ -37,13 +37,28 @@ export interface UsageBucket {
 }
 
 /**
- * Aggregate canonical assistant-message usage without interpreting importer
- * metadata. Results are sorted by ascending bucket key.
+ * Fold threads into usage buckets ONE AT A TIME.
+ *
+ * `aggregateUsage` takes an array, which means a caller aggregating a corpus
+ * must materialize every thread — each holding every message, tool payload
+ * and result verbatim — before a single number is produced. That is fine for
+ * a handful of sessions and impossible for a real archive (thousands of
+ * sessions, tens of gigabytes). The accumulator lets a caller import, fold
+ * and release one file at a time; only the buckets and the dedup key set
+ * (ids, not content) stay resident.
+ *
+ * The cross-file duplicate protection is preserved exactly: the seen-set
+ * lives on the accumulator, so folding two overlapping imports separately
+ * counts a shared message once, just as passing them in one array does.
  */
-export function aggregateUsage(
-  threads: readonly Thread[],
-  options: AggregateUsageOptions = {},
-): UsageBucket[] {
+export interface UsageAccumulator {
+  /** Fold one thread in. Safe to call across many imports; dedup is retained. */
+  add(thread: Thread): void;
+  /** Buckets so far, sorted by ascending key. */
+  result(): UsageBucket[];
+}
+
+export function createUsageAccumulator(options: AggregateUsageOptions = {}): UsageAccumulator {
   const by = options.by ?? "model";
   const buckets = new Map<string, UsageBucket>();
   // Imports can overlap or include the same session more than once. Canonical
@@ -51,12 +66,12 @@ export function aggregateUsage(
   // any filtering or bucket accounting.
   const seenMessageIds = new Set<string>();
 
-  for (const thread of threads) {
+  const add = (thread: Thread): void => {
     for (const message of thread.messages) {
       if (message.role !== "assistant") continue;
       if (options.since !== undefined && message.timestamp < options.since) continue;
 
-      const key = usageKey(by, thread.id, message.model, message.timestamp);
+      const key = usageKey(by, thread, message.model, message.timestamp);
       let bucket = buckets.get(key);
       if (!bucket) {
         bucket = {
@@ -94,17 +109,36 @@ export function aggregateUsage(
         bucket.reasoningMessages = (bucket.reasoningMessages ?? 0) + 1;
       }
     }
-  }
+  };
 
-  // Code-point order, deliberately not localeCompare: collation varies by
-  // host locale (sv/en disagree on "\u00e4"), and output must be
-  // deterministic everywhere.
-  return [...buckets.values()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  const result = (): UsageBucket[] =>
+    // Code-point order, deliberately not localeCompare: collation varies by
+    // host locale (sv/en disagree on "\u00e4"), and output must be
+    // deterministic everywhere.
+    [...buckets.values()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+
+  return { add, result };
+}
+
+/**
+ * Aggregate canonical assistant-message usage without interpreting importer
+ * metadata. Results are sorted by ascending bucket key.
+ *
+ * Buffers whatever the caller passes; `createUsageAccumulator` is the
+ * streaming form for corpora that cannot be held in memory.
+ */
+export function aggregateUsage(
+  threads: readonly Thread[],
+  options: AggregateUsageOptions = {},
+): UsageBucket[] {
+  const accumulator = createUsageAccumulator(options);
+  for (const thread of threads) accumulator.add(thread);
+  return accumulator.result();
 }
 
 function usageKey(
   by: UsageAggregationDimension,
-  threadId: string,
+  thread: Thread,
   model: string | undefined,
   timestamp: number,
 ): string {
@@ -114,6 +148,18 @@ function usageKey(
     case "day":
       return new Date(timestamp).toISOString().slice(0, 10);
     case "thread":
-      return threadId;
+      return thread.id;
+    case "source":
+      // The importing tool: `claude-code`, `codex`, `opencode`… Coarse by
+      // design — `sourceVersion` belongs to a later dimension rather than
+      // baked into this key, so upgrading a CLI does not split a harness in
+      // two mid-corpus.
+      //
+      // Self-describing rather than "unknown": this bucket is a DERIVED
+      // absence, and a source could legitimately be named `unknown`. (The
+      // model dimension above still says "unknown" — changing an existing
+      // bucket key would break consumers, so it is left alone and tracked
+      // separately.)
+      return thread.metadata?.source ?? "(no source)";
   }
 }

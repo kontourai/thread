@@ -196,3 +196,193 @@ describe("ferry CLI (built binary)", () => {
     ).toThrow(/could not detect/);
   });
 });
+
+describe("ferry rows (#37)", () => {
+  const rowsOf = (args: string[]) =>
+    run(["rows", ...args])
+      .trim()
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+
+  it("emits one row per tool call, joined to its result", () => {
+    const rows = rowsOf([join(fixturesDir, "codex-exec-program.jsonl")]);
+    expect(rows).toHaveLength(8);
+    const first = rows[0]!;
+    // Every dimension the analysis questions need, on one flat line.
+    expect(first).toMatchObject({
+      source: "codex",
+      threadId: "exec-session",
+      model: "gpt-5-codex",
+      tool: "exec",
+      toolCallId: "c1",
+      isError: false,
+    });
+    expect(first["resultChars"]).toBe(5);
+    // The derivation rides along, still marked as derived rather than input.
+    expect(
+      (first["derived"] as Record<string, Record<string, unknown>>)["codexExec"]?.["operation"],
+    ).toBe("exec_command");
+  });
+
+  it("leaves result columns ABSENT for an unpaired call", () => {
+    // A call with no result is not a successful call. Defaulting isError to
+    // false here would quietly invent an outcome the transcript never recorded.
+    const rows = rowsOf([join(fixturesDir, "codex-exec-program.jsonl")]);
+    const unpaired = rows.find((row) => row["toolCallId"] === "c3")!;
+    expect(unpaired["isError"]).toBeUndefined();
+    expect(unpaired["resultChars"]).toBeUndefined();
+  });
+
+  it("skips a bad input instead of losing the whole corpus", () => {
+    // The documented use is a whole sessions directory, where one unreadable
+    // or foreign file among thousands is ordinary. Rows from the good files
+    // must still arrive, and the exit code must still say something was
+    // skipped so a script can tell a partial run from a complete one.
+    let status = 0;
+    let stdout = "";
+    try {
+      stdout = execFileSync(
+        process.execPath,
+        // The BAD file first, deliberately. With the good file first, an
+        // aborting implementation also exits 1 with its rows already
+        // flushed — the assertion below would pass either way and prove
+        // nothing (an injection caught exactly that).
+        [cli, "rows", join(outDir, "missing.jsonl"), join(fixturesDir, "codex-exec-program.jsonl")],
+        { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
+      );
+    } catch (error) {
+      const failure = error as { status?: number; stdout?: string };
+      status = failure.status ?? 0;
+      stdout = failure.stdout ?? "";
+    }
+    // 2 = completed with skipped inputs (1 stays fatal), so a partial run and
+    // a total failure are distinguishable.
+    expect(status).toBe(2);
+    expect(stdout.trim().split("\n").filter(Boolean)).toHaveLength(8);
+  });
+
+  it("emits a narrower CSV projection with a single header", () => {
+    const out = run(["rows", join(fixturesDir, "codex-exec-program.jsonl"), "--csv"]).trim();
+    const lines = out.split("\n");
+    expect(lines[0]).toBe(
+      "source,threadId,timestamp,model,provider,tool,operation,command,isError,resultChars,cwd,gitBranch",
+    );
+    // One header for the whole stream, not one per input thread.
+    expect(lines.filter((line) => line.startsWith("source,threadId"))).toHaveLength(1);
+    // A command containing a comma AND a newline is quoted, so the row
+    // survives it — the cell legitimately spans output lines.
+    expect(out).toContain('"sed -n \'1,40p\' a.ts');
+    // The lifted operation column is populated from the derivation.
+    expect(lines[1]).toContain(",exec,exec_command,git status --short,");
+  });
+
+  it("skips an UNDETECTABLE file, not just a missing one", () => {
+    // The blocking case the first version missed: format detection called
+    // fail() (process.exit), which no try/catch can survive, so a zero-byte
+    // or foreign file killed the whole run. Bad file first, so an aborting
+    // implementation yields zero rows.
+    const junk = join(outDir, "junk.txt");
+    writeFileSync(junk, "not a transcript at all\n");
+    let status = 0;
+    let stdout = "";
+    try {
+      stdout = execFileSync(
+        process.execPath,
+        [cli, "rows", junk, join(fixturesDir, "codex-exec-program.jsonl")],
+        { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
+      );
+    } catch (error) {
+      const failure = error as { status?: number; stdout?: string };
+      status = failure.status ?? 0;
+      stdout = failure.stdout ?? "";
+    }
+    expect(status).toBe(2);
+    expect(stdout.trim().split("\n").filter(Boolean)).toHaveLength(8);
+  });
+
+  it("emits ONE row for a tool call the writer duplicated", () => {
+    // Claude Code can write the same assistant line twice (same uuid, same
+    // message.id); the importer merges split events by message.id, so the
+    // identical tool_call part lands twice in one message's content. Found
+    // once in 72,735 real rows — and it double-counts in exactly the
+    // GROUP BY the README demonstrates.
+    const rows = run(["rows", join(fixturesDir, "claude-code-duplicate-toolcall.jsonl")])
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ tool: "Agent", toolCallId: "toolu_01DUP" });
+  });
+
+  it("quotes embedded double quotes in CSV", () => {
+    const out = run(["rows", join(fixturesDir, "codex-exec-program.jsonl"), "--csv"]);
+    // c1's command contains no quotes; c6's derived command is absent. Use a
+    // thread whose arguments carry quotes: the claude-code fixture's Bash
+    // call. Assert the escaping rule directly on a known-quoted cell.
+    expect(out).not.toContain('""""');
+    const quoted = run(["rows", join(fixturesDir, "claude-code-session.jsonl"), "--csv"]);
+    for (const line of quoted.split("\n").slice(1)) {
+      // Any quoted cell must have balanced quotes after unescaping.
+      const doubled = (line.match(/""/g) ?? []).length * 2;
+      const total = (line.match(/"/g) ?? []).length;
+      expect((total - doubled) % 2).toBe(0);
+    }
+  });
+
+  it("does not truncate a CSV row at an embedded newline", () => {
+    // A `cmd` literal is frequently a multi-line script (16.8% of derived
+    // commands in a sampled corpus), so a quoted cell legitimately spans
+    // physical lines. Building each row by slicing the second line off a
+    // formatted batch silently dropped everything after the first newline —
+    // the row lost its closing quote and its remaining columns.
+    const out = run(["rows", join(fixturesDir, "codex-exec-program.jsonl"), "--csv"]);
+    expect(out).toContain("sed -n '1,40p' b.ts\",");
+    // Balanced quotes across the whole document: an unterminated quote means
+    // a truncated row.
+    const doubled = (out.match(/""/g) ?? []).length * 2;
+    const total = (out.match(/"/g) ?? []).length;
+    expect((total - doubled) % 2).toBe(0);
+  });
+
+  it("emits exactly one CSV header across multiple inputs", () => {
+    const out = run([
+      "rows",
+      join(fixturesDir, "codex-exec-program.jsonl"),
+      join(fixturesDir, "claude-code-session.jsonl"),
+      "--csv",
+    ]);
+    expect(out.split("\n").filter((line) => line.startsWith("source,threadId"))).toHaveLength(1);
+  });
+});
+
+describe("ferry usage --by source (#34)", () => {
+  it("groups by the importing harness", () => {
+    const out = JSON.parse(
+      run([
+        "usage",
+        join(fixturesDir, "codex-rollout.jsonl"),
+        join(fixturesDir, "claude-code-session.jsonl"),
+        "--by",
+        "source",
+        "--json",
+      ]),
+    ) as Array<{ key: string }>;
+    expect(out.map((bucket) => bucket.key).sort()).toEqual(["claude-code", "codex"]);
+  });
+
+  it("rejects an unknown dimension by name", () => {
+    let message = "";
+    try {
+      execFileSync(process.execPath, [cli, "usage", join(fixturesDir, "codex-rollout.jsonl"), "--by", "harness"], {
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      message = String((error as { stderr?: string }).stderr ?? "");
+    }
+    expect(message).toContain('"source"');
+  });
+});
+
