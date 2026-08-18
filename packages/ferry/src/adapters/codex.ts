@@ -28,7 +28,8 @@
  *   command. A `cmd` assembled from a variable, and a backtick template still
  *   containing `${…}`, are absent rather than guessed; non-JSON array
  *   literals are not recovered (comma-splitting them corrupts values that
- *   contain commas). At most 32 commands per call are retained.
+ *   contain commas). At most 32 commands per call are retained, and hitting
+ *   that cap sets `commandsTruncated: true`.
  * - Tool RESULTS carry the name of their call: Codex records it only on the
  *   call, so the importer pairs them by `call_id`. `""` now means genuinely
  *   unpaired.
@@ -303,8 +304,15 @@ function deriveExecOperation(source: string): Record<string, unknown> | undefine
   // whose payload is a program (see PROGRAM_PAYLOAD_TOOLS).
   if (operations.size === 0) return undefined;
   const commands: string[] = [];
+  let truncated = false;
   for (const match of source.matchAll(EXEC_CMD_VALUE)) {
-    if (commands.length >= MAX_DERIVED_COMMANDS) break;
+    if (commands.length >= MAX_DERIVED_COMMANDS) {
+      // Say so. A capped list that looks complete is the same lie this
+      // whole derivation exists to avoid — a consumer cannot otherwise
+      // distinguish "made exactly 32 commands" from "was cut off".
+      truncated = true;
+      break;
+    }
     const raw = match[1]!.trim();
     let value: unknown;
     try {
@@ -332,6 +340,7 @@ function deriveExecOperation(source: string): Record<string, unknown> | undefine
     ...(operations.size === 1 ? { operation: [...operations][0] } : {}),
     ...(operations.size > 1 ? { operation: "mixed", operations: [...operations].sort() } : {}),
     ...(commands.length > 0 ? { commands } : {}),
+    ...(truncated ? { commandsTruncated: true } : {}),
   };
 }
 

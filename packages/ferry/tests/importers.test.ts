@@ -1034,6 +1034,16 @@ describe("codex exec legibility (#32, #33, #38)", () => {
     expect(byId("c7").derived).toBeUndefined();
   });
 
+  it("derives for js_repl too, the other program-payload tool", () => {
+    // js_repl is rarer than exec (34 vs ~309k in a local corpus) but takes
+    // the same program payload, so it is in the name gate — and was
+    // otherwise unexercised by any fixture.
+    expect(derivedOf("c8")).toMatchObject({
+      operation: "exec_command",
+      commands: ["node -e 'console.log(1)'"],
+    });
+  });
+
   it("carries the call name onto its result (#38)", () => {
     expect(results.find((r) => r.toolCallId === "c1")?.name).toBe("exec");
     expect(results.find((r) => r.toolCallId === "c2")?.name).toBe("exec");
