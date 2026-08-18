@@ -244,7 +244,11 @@ describe("ferry rows (#37)", () => {
     try {
       stdout = execFileSync(
         process.execPath,
-        [cli, "rows", join(fixturesDir, "codex-exec-program.jsonl"), join(outDir, "missing.jsonl")],
+        // The BAD file first, deliberately. With the good file first, an
+        // aborting implementation also exits 1 with its rows already
+        // flushed — the assertion below would pass either way and prove
+        // nothing (an injection caught exactly that).
+        [cli, "rows", join(outDir, "missing.jsonl"), join(fixturesDir, "codex-exec-program.jsonl")],
         { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
       );
     } catch (error) {
