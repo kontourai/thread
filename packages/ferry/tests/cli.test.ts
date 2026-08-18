@@ -331,6 +331,21 @@ describe("ferry rows (#37)", () => {
     }
   });
 
+  it("does not truncate a CSV row at an embedded newline", () => {
+    // A `cmd` literal is frequently a multi-line script (16.8% of derived
+    // commands in a sampled corpus), so a quoted cell legitimately spans
+    // physical lines. Building each row by slicing the second line off a
+    // formatted batch silently dropped everything after the first newline —
+    // the row lost its closing quote and its remaining columns.
+    const out = run(["rows", join(fixturesDir, "codex-exec-program.jsonl"), "--csv"]);
+    expect(out).toContain("sed -n '1,40p' b.ts\",");
+    // Balanced quotes across the whole document: an unterminated quote means
+    // a truncated row.
+    const doubled = (out.match(/""/g) ?? []).length * 2;
+    const total = (out.match(/"/g) ?? []).length;
+    expect((total - doubled) % 2).toBe(0);
+  });
+
   it("emits exactly one CSV header across multiple inputs", () => {
     const out = run([
       "rows",

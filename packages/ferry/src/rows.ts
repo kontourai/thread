@@ -124,15 +124,7 @@ export function formatRowJsonl(row: ToolCallRow): string {
   return JSON.stringify(row);
 }
 
-/** Header for the CSV projection, emitted once per run. */
-export function csvHeader(): string {
-  return CSV_COLUMNS.join(",");
-}
 
-/** One row as a CSV line, without a header. */
-export function formatRowCsv(row: ToolCallRow): string {
-  return formatRowsCsv([row]).split("\n")[1] ?? "";
-}
 
 const CSV_COLUMNS = [
   "source",
@@ -165,8 +157,23 @@ function csvCell(value: unknown): string {
  * without lying about its shape. Use `--jsonl` for the complete record.
  */
 export function formatRowsCsv(rows: readonly ToolCallRow[]): string {
-  const lines = [CSV_COLUMNS.join(",")];
-  for (const row of rows) {
+  return [csvHeader(), ...rows.map((row) => formatRowCsv(row))].join("\n");
+}
+
+/** Header for the CSV projection, emitted once per run. */
+export function csvHeader(): string {
+  return CSV_COLUMNS.join(",");
+}
+
+/**
+ * One row as a CSV line — which may itself span physical lines, because a
+ * quoted cell can legitimately contain a newline (a `cmd` literal is often a
+ * multi-line script). Building it directly, rather than slicing the second
+ * line off a formatted batch, is the difference between the whole row and a
+ * row truncated at its first embedded newline.
+ */
+export function formatRowCsv(row: ToolCallRow): string {
+  {
     const derived = (row.derived?.["codexExec"] ?? {}) as Record<string, unknown>;
     const commands = derived["commands"];
     const command =
@@ -191,7 +198,6 @@ export function formatRowsCsv(rows: readonly ToolCallRow[]): string {
       cwd: row.cwd,
       gitBranch: row.gitBranch,
     };
-    lines.push(CSV_COLUMNS.map((column) => csvCell(cells[column])).join(","));
+    return CSV_COLUMNS.map((column) => csvCell(cells[column])).join(",");
   }
-  return lines.join("\n");
 }
