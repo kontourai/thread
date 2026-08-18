@@ -201,3 +201,26 @@ export function formatRowCsv(row: ToolCallRow): string {
     return CSV_COLUMNS.map((column) => csvCell(cells[column])).join(",");
   }
 }
+
+/**
+ * Does this import failure mean "this file holds no conversation" rather than
+ * "this file is broken"?
+ *
+ * A sessions directory legitimately contains records that are not transcripts
+ * — Claude Code writes bridge sidecars, Codex writes rollouts with only a
+ * `session_meta` — and treating those as failures makes a whole-corpus run
+ * report a problem every time, which teaches the reader to ignore the signal.
+ *
+ * String matching, because the adapters signal this by message rather than by
+ * type. That is fragile on purpose: `tests/importers.test.ts` enumerates the
+ * empty-input error of EVERY adapter and asserts this recognizes it, so a new
+ * adapter (or a reworded message) fails the suite rather than silently
+ * degrading a corpus run to exit 2.
+ */
+export function isNoImportableContentError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    /\bcontained no importable messages\b/i.test(message) ||
+    /\bno .*(importable items|conversation events).* found\b/i.test(message)
+  );
+}

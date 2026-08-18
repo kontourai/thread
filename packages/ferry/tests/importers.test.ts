@@ -12,6 +12,7 @@ import {
 } from "@kontourai/thread";
 import type { Message } from "@kontourai/thread";
 import {
+  isNoImportableContentError,
   importFromChatGPTExport,
   importFromClaudeCode,
   importFromCodex,
@@ -1049,3 +1050,59 @@ describe("codex exec legibility (#32, #33, #38)", () => {
     expect(results.find((r) => r.toolCallId === "c2")?.name).toBe("exec");
   });
 });
+
+describe("empty-input errors are recognized as 'nothing to import' (#37 review)", () => {
+  // The rows verb must not report a non-transcript file as a failure. That
+  // decision is made by matching the adapter's error text, so this test
+  // enumerates EVERY adapter's empty-input message: a new adapter, or a
+  // reworded message, fails here rather than silently degrading a
+  // whole-corpus run to a permanent exit 2.
+  const emptyInputErrors = [
+    "No Claude Code conversation events found in input",
+    "Claude Code input contained no importable messages",
+    "No Codex importable items found in input",
+    "Codex input contained no importable messages",
+    "Kiro input contained no importable messages",
+    "pi input contained no importable messages",
+    "Muse input contained no importable messages",
+    "OpenCode input contained no importable messages",
+  ];
+
+  it("recognizes every adapter's empty-input error", () => {
+    for (const message of emptyInputErrors) {
+      expect(isNoImportableContentError(new Error(message))).toBe(true);
+    }
+  });
+
+  it("does not swallow a genuine failure", () => {
+    for (const message of [
+      "cannot read /x/y.jsonl: EACCES: permission denied",
+      "could not detect the format of /x/y.jsonl; pass --from <format>",
+      "Invalid Codex rollout line 3: unexpected token",
+    ]) {
+      expect(isNoImportableContentError(new Error(message))).toBe(false);
+    }
+  });
+
+  it("matches the strings the adapters actually throw", () => {
+    // Not a restatement of the list above: drive the real importers with
+    // empty input and assert the thrown message is recognized. A reworded
+    // adapter message breaks this even if the literal list goes stale.
+    const thrown: string[] = [];
+    for (const run of [
+      () => importFromClaudeCode('{"type":"summary"}'),
+      () => importFromCodex('{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"x"}}'),
+    ]) {
+      try {
+        run();
+      } catch (error) {
+        thrown.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    expect(thrown.length).toBeGreaterThan(0);
+    for (const message of thrown) {
+      expect(isNoImportableContentError(new Error(message))).toBe(true);
+    }
+  });
+});
+

@@ -21,7 +21,13 @@ import {
   type OutputFormat,
 } from "./convert.js";
 import { detectFormat, type InputFormat } from "./detect.js";
-import { csvHeader, formatRowCsv, formatRowJsonl, toolCallRows } from "./rows.js";
+import {
+  csvHeader,
+  formatRowCsv,
+  formatRowJsonl,
+  isNoImportableContentError,
+  toolCallRows,
+} from "./rows.js";
 
 const program = new Command();
 
@@ -352,14 +358,15 @@ program
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        // "No conversation events" is a deliberate importer outcome, not a
+        // "Nothing importable here" is a deliberate importer outcome, not a
         // failure: a sessions directory legitimately contains files that are
         // not transcripts at all (Claude Code writes bridge sidecars keyed
-        // bridgeSessionId/lastSequenceNum). Counting those as skips made the
-        // README's own advertised invocation exit non-zero every time on a
-        // real corpus — 1,652 of 1,802 files here — which trains the reader
-        // to ignore the signal.
-        if (/no .*(conversation|messages).* found/i.test(message)) {
+        // bridgeSessionId/lastSequenceNum; a Codex rollout can hold only a
+        // session_meta). Counting those as skips made the README's own
+        // advertised invocation exit non-zero every time on a real corpus —
+        // 1,652 of 1,802 files here — which trains the reader to ignore the
+        // signal. Every adapter's phrasing is covered and enumerated by test.
+        if (isNoImportableContentError(error)) {
           notConversations += 1;
           continue;
         }
