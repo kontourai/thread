@@ -940,3 +940,82 @@ describe("round trips", () => {
     }
   });
 });
+
+describe("claude-code tool result names (#38)", () => {
+  const thread = importFromClaudeCode(fixture("claude-code-session.jsonl"));
+  const results = thread.messages.flatMap((m) => (m.role === "tool" ? m.toolResults : []));
+  const calls = new Map(
+    thread.messages
+      .flatMap((m) => (m.role === "assistant" ? m.content : []))
+      .filter((c) => c.type === "tool_call")
+      .map((c) => [c.toolCall.id, c.toolCall.name] as const),
+  );
+
+  it("names every paired result after its call", () => {
+    expect(results.length).toBeGreaterThan(0);
+    for (const result of results) {
+      // Only paired results — an unpaired one legitimately keeps "".
+      if (!calls.has(result.toolCallId)) continue;
+      expect(result.name).toBe(calls.get(result.toolCallId));
+      expect(result.name).not.toBe("");
+    }
+  });
+});
+
+describe("codex exec legibility (#32, #33, #38)", () => {
+  const thread = importFromCodex(fixture("codex-exec-program.jsonl"));
+  const calls = thread.messages.flatMap((m) =>
+    m.role === "assistant" ? m.content.filter((c) => c.type === "tool_call").map((c) => c.toolCall) : [],
+  );
+  const byId = (id: string) => calls.find((c) => c.id === id)!;
+  const results = thread.messages.flatMap((m) => (m.role === "tool" ? m.toolResults : []));
+
+  it("parses arguments for custom_tool_call, not only function_call (#32)", () => {
+    // The gate on `function_call` left every Codex `exec` — the majority of
+    // tool calls in a real corpus — with parsedArguments permanently absent.
+    expect(byId("c1").parsedArguments).toBeDefined();
+  });
+
+  it("recovers the operation and literal command from an exec program (#33)", () => {
+    expect(byId("c1").parsedArguments).toMatchObject({
+      operation: "exec_command",
+      commands: ["git status --short"],
+    });
+    // The verbatim program stays the lossless record.
+    expect(byId("c1").arguments).toContain("tools.exec_command");
+  });
+
+  it("distinguishes a non-shell exec from a command (#33)", () => {
+    // 38% of exec calls in a sampled corpus run no shell command at all.
+    // Bucketing them as commands is exactly the conflation this fixes.
+    expect(byId("c2").parsedArguments).toMatchObject({ operation: "write_stdin" });
+    expect(byId("c2").parsedArguments?.["commands"]).toBeUndefined();
+  });
+
+  it("reports a program that invokes several operations as mixed", () => {
+    expect(byId("c3").parsedArguments).toMatchObject({
+      operation: "mixed",
+      operations: ["exec_command", "write_stdin"],
+      commands: ["echo one"],
+    });
+  });
+
+  it("never mines commands out of patch text", () => {
+    // apply_patch is a custom_tool_call too, and its payload is patch TEXT.
+    // The patch here contains `cmd: "legacy"` in the diffed source; deriving a
+    // command from that would be pure fabrication.
+    expect(byId("c4").parsedArguments).toBeUndefined();
+    expect(byId("c4").arguments).toContain("Begin Patch");
+  });
+
+  it("still parses a JSON function_call payload", () => {
+    expect(byId("c5").parsedArguments).toMatchObject({ command: ["ls", "-la"] });
+  });
+
+  it("carries the call name onto its result (#38)", () => {
+    // Codex records the name only on the call, so a result-side rollup
+    // otherwise buckets every result under "".
+    expect(results.find((r) => r.toolCallId === "c1")?.name).toBe("exec");
+    expect(results.find((r) => r.toolCallId === "c2")?.name).toBe("exec");
+  });
+});

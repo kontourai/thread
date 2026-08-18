@@ -92,6 +92,14 @@ interface CodexReducerState {
   lastRateLimits?: Record<string, unknown>;
   unattributedUsage?: CodexUnattributedUsage;
   duplicateAgentMessageText?: string;
+  /**
+   * Tool-call names awaiting their result, keyed by call id (#38). Bounded,
+   * not a growing index: an entry is deleted the moment its output arrives,
+   * and outputs follow their call closely in these rollouts, so the map holds
+   * only the in-flight calls. A plain record, not a Map, because the
+   * incremental importer serializes this state as JSON.
+   */
+  pendingToolNames?: Record<string, string>;
 }
 
 function codexThread(state: CodexReducerState): Thread {
@@ -199,12 +207,99 @@ function stepCodex(record: z.infer<typeof RolloutLine>, state: CodexReducerState
     const name = typeof payload["name"] === "string" ? payload["name"] : "unknown";
     const callId = typeof payload["call_id"] === "string" ? payload["call_id"] : typeof payload["id"] === "string" ? payload["id"] : nextId();
     const arguments_ = typeof payload["arguments"] === "string" ? payload["arguments"] : typeof payload["input"] === "string" ? payload["input"] : "{}";
-    let parsedArguments: Record<string, unknown> | undefined; if (type === "function_call") { try { parsedArguments = asRecord(JSON.parse(arguments_)); } catch { /* deliberate */ } }
+    // Parse for BOTH call types (#32). Gating this on `function_call` left
+    // `parsedArguments` permanently undefined for `custom_tool_call`, which is
+    // how Codex emits `exec` — the majority of tool calls in a real corpus.
+    let parsedArguments: Record<string, unknown> | undefined;
+    try { parsedArguments = asRecord(JSON.parse(arguments_)); } catch { /* not JSON; see below */ }
+    // `exec` is not a tool, it is an interpreter: its payload is a JS program
+    // that calls into a tool API, so JSON.parse never succeeds and the tool
+    // NAME alone answers nothing — one bar covering shell commands, stdin
+    // writes and patch application alike (#33). Recover the operation and any
+    // literal commands as a best-effort derivation; `arguments` keeps the
+    // verbatim program, which stays the only lossless record.
+    if (!parsedArguments) {
+      const derived = deriveExecOperation(arguments_);
+      if (derived) parsedArguments = derived;
+    }
+    state.pendingToolNames = { ...(state.pendingToolNames ?? {}), [callId]: name };
     append({ type: "tool_call", toolCall: { id: callId, name, arguments: arguments_, parsedArguments } });
   } else if (type === "function_call_output" || type === "custom_tool_call_output") {
     flush(); const callId = typeof payload["call_id"] === "string" ? payload["call_id"] : nextId();
-    state.messages.push({ id: nextId(), threadId, role: "tool", timestamp, toolResults: [{ toolCallId: callId, name: "", content: [{ type: "text", text: extractOutputText(payload["output"]) }] }] });
+    // Carry the call's name onto its result (#38). Codex records the name only
+    // on the call, so a result-side rollup otherwise buckets everything under
+    // "" and looks like it worked. Consume the pending entry so the map stays
+    // bounded; a genuinely unpaired result keeps "" — the case the field's
+    // contract is actually for.
+    const pendingNames = state.pendingToolNames ?? {};
+    const resolvedName = pendingNames[callId] ?? "";
+    if (callId in pendingNames) {
+      const { [callId]: _consumed, ...rest } = pendingNames;
+      state.pendingToolNames = rest;
+    }
+    state.messages.push({ id: nextId(), threadId, role: "tool", timestamp, toolResults: [{ toolCallId: callId, name: resolvedName, content: [{ type: "text", text: extractOutputText(payload["output"]) }] }] });
   }
+}
+
+/**
+ * Recover what a Codex `exec` program actually did (#33).
+ *
+ * `exec` takes a JavaScript program, not JSON arguments, so `ToolCall.name`
+ * is `exec` for every one of them regardless of whether the program ran a
+ * shell command, wrote to a live process's stdin, or applied a patch. In a
+ * sampled corpus `exec` was ~74% of Codex tool calls and ~38% of those ran no
+ * shell command at all, so grouping by name alone answers nothing.
+ *
+ * This is a HEURISTIC over source text, and is deliberately conservative:
+ * - `operation` is the invoked `tools.<fn>` when the program invokes exactly
+ *   one distinct function, `"mixed"` when it invokes several, and is omitted
+ *   when none is recognized.
+ * - `commands` holds only literal `cmd` values. A command built from a
+ *   variable is not recoverable and is simply absent — never guessed.
+ * Returns undefined when nothing is recognized, so `parsedArguments` stays
+ * absent rather than asserting an empty structure.
+ */
+const EXEC_TOOL_CALL = /\btools\.([A-Za-z_$][\w$]*)\s*\(/g;
+const EXEC_CMD_VALUE =
+  /(?:"cmd"|'cmd'|cmd)\s*:\s*(\[[^\]]*\]|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)/g;
+
+export function deriveExecOperation(source: string): Record<string, unknown> | undefined {
+  const operations = new Set<string>();
+  for (const match of source.matchAll(EXEC_TOOL_CALL)) operations.add(match[1]!);
+  // Only mine commands out of a payload that is actually a tool-API program.
+  // `apply_patch` is a `custom_tool_call` too, and its payload is patch TEXT —
+  // scanning that for `cmd:` invents commands out of source code that merely
+  // contains the word (a struct field, a config key). Measured against a live
+  // corpus: 14,755 payloads carry both a `tools.*` call and a `cmd` literal,
+  // and zero carry a `cmd` literal without one, so this gate costs nothing
+  // real and removes the whole fabrication class.
+  if (operations.size === 0) return undefined;
+  const commands: string[] = [];
+  for (const match of source.matchAll(EXEC_CMD_VALUE)) {
+    const raw = match[1]!.trim();
+    let value: unknown;
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      // JS literals are not JSON: single quotes, backticks, trailing commas.
+      if ((raw.startsWith("'") && raw.endsWith("'")) || (raw.startsWith("`") && raw.endsWith("`"))) {
+        value = raw.slice(1, -1);
+      } else if (raw.startsWith("[")) {
+        value = raw
+          .slice(1, -1)
+          .split(",")
+          .map((part) => part.trim().replace(/^['"`]|['"`]$/g, ""))
+          .filter((part) => part.length > 0);
+      } else continue;
+    }
+    const command = Array.isArray(value) ? value.map(String).join(" ") : String(value);
+    if (command.length > 0) commands.push(command);
+  }
+  return {
+    ...(operations.size === 1 ? { operation: [...operations][0] } : {}),
+    ...(operations.size > 1 ? { operation: "mixed", operations: [...operations].sort() } : {}),
+    ...(commands.length > 0 ? { commands } : {}),
+  };
 }
 
 function flushCodexPending(state: CodexReducerState): void {
