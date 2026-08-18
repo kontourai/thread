@@ -301,6 +301,21 @@ describe("ferry rows (#37)", () => {
     expect(stdout.trim().split("\n").filter(Boolean)).toHaveLength(8);
   });
 
+  it("emits ONE row for a tool call the writer duplicated", () => {
+    // Claude Code can write the same assistant line twice (same uuid, same
+    // message.id); the importer merges split events by message.id, so the
+    // identical tool_call part lands twice in one message's content. Found
+    // once in 72,735 real rows — and it double-counts in exactly the
+    // GROUP BY the README demonstrates.
+    const rows = run(["rows", join(fixturesDir, "claude-code-duplicate-toolcall.jsonl")])
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ tool: "Agent", toolCallId: "toolu_01DUP" });
+  });
+
   it("quotes embedded double quotes in CSV", () => {
     const out = run(["rows", join(fixturesDir, "codex-exec-program.jsonl"), "--csv"]);
     // c1's command contains no quotes; c6's derived command is absent. Use a

@@ -48,6 +48,11 @@ which a spreadsheet may interpret as a formula. That is deliberate — escaping
 would corrupt every legitimate `-1` and every command starting with a flag —
 so prefer `--jsonl` into a query engine for untrusted data.
 
+`claude-code-duplicate-toolcall.jsonl` is composed: it reproduces the real
+writer behaviour of emitting one assistant line twice (same `uuid`, same
+`message.id`), which the importer merges by `message.id` — observed once
+across 72,735 rows of a local corpus.
+
 Codex fixture provenance: `codex-forked-rollout.jsonl` (lines 1-4 = rollout
 2026-06-25T23-06-53-019f0252 lines 19-22) and `codex-rollout-variants.jsonl`
 (lines 1-4 = rollout 2026-03-27T22-21-41-019d32ad lines 8, 10, 11, 15) are
