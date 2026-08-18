@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.5.0](https://github.com/kontourai/thread/compare/ferry-v0.4.0...ferry-v0.5.0) (2026-08-18)
+
+
+### Features
+
+* **ferry:** row emitter, harness dimension, and a streaming usage fold ([#41](https://github.com/kontourai/thread/issues/41)) ([5b335fe](https://github.com/kontourai/thread/commit/5b335fed1ac5fd97199e737fa18f045826207f7d))
+
+
+### Fixes
+
+* **ferry:** make Codex exec legible and name tool results after their calls ([#39](https://github.com/kontourai/thread/issues/39)) ([96c605a](https://github.com/kontourai/thread/commit/96c605a255fcff1dddd0985abc2ac68db4cf6ab4))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @kontourai/thread bumped from ^0.3.0 to ^0.4.0
+
 ## [0.4.0](https://github.com/kontourai/thread/compare/ferry-v0.3.0...ferry-v0.4.0) (2026-08-10)
 
 
