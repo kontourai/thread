@@ -28,9 +28,25 @@ places — `source`/`sourceVersion`/`cwd`/`gitBranch` from the thread,
 `arguments`, `parsedArguments` when the source supplied structure, `derived`
 for importer heuristics, and `isError`/`resultChars` joined from the matching
 `ToolResult` by `toolCallId`. Result columns are ABSENT for an unpaired call:
-a missing result is not a successful one. Unlike `convert`/`usage`, an
-unreadable input is warned about and skipped rather than aborting the run —
-the exit code still reports that something was skipped.
+a missing result is not a successful one, and `resultChars` counts result
+TEXT only, so a result carrying just an image reads as 0.
+
+Unlike `convert`/`usage`, a bad input is warned about and skipped rather than
+aborting the run: **exit 0** means every input was read, **2** means the run
+completed with inputs skipped, and **1** stays reserved for a fatal error. A
+file that simply contains no conversation (a sessions directory holds
+non-transcript sidecars) is reported but is not a skip — it is a normal
+outcome, not a failure.
+
+There is no `sidechain` column: in current Claude Code versions subagent
+traffic lives in separate transcript files rather than inline sidechain
+lines, so such a column would be permanently false. It returns when an
+importer reads those files.
+
+`--csv` cells are emitted verbatim, including a leading `=`, `+`, `-` or `@`,
+which a spreadsheet may interpret as a formula. That is deliberate — escaping
+would corrupt every legitimate `-1` and every command starting with a flag —
+so prefer `--jsonl` into a query engine for untrusted data.
 
 Codex fixture provenance: `codex-forked-rollout.jsonl` (lines 1-4 = rollout
 2026-06-25T23-06-53-019f0252 lines 19-22) and `codex-rollout-variants.jsonl`

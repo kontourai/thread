@@ -268,11 +268,28 @@ describe("createUsageAccumulator (#36, #34)", () => {
     metadata: { source },
   });
 
-  it("folding one thread at a time equals aggregating the array", () => {
-    const threads = [thread("a", "codex", "m1", 10), thread("b", "claude-code", "m2", 20)];
+  it("folds incrementally and reports after each addition", () => {
+    // Not an equality-with-aggregateUsage assertion: that wrapper now IS this
+    // accumulator plus a loop, so comparing them executes identical code and
+    // could not fail for any implementation. Assert the incremental contract
+    // instead — result() is meaningful before every thread has arrived, which
+    // is the property a streaming caller depends on.
     const accumulator = createUsageAccumulator({ by: "source" });
-    for (const t of threads) accumulator.add(t);
-    expect(accumulator.result()).toEqual(aggregateUsage(threads, { by: "source" }));
+    accumulator.add(thread("a", "codex", "m1", 10));
+    expect(accumulator.result()).toEqual([
+      expect.objectContaining({ key: "codex", inputTokens: 10, messages: 1 }),
+    ]);
+    accumulator.add(thread("b", "claude-code", "m2", 20));
+    expect(accumulator.result().map((b) => [b.key, b.inputTokens])).toEqual([
+      ["claude-code", 20],
+      ["codex", 10],
+    ]);
+  });
+
+  it("names an absent source as a derived absence, not a value", () => {
+    const nameless = { ...thread("z", "codex", "m1", 3), metadata: undefined };
+    const [bucket] = aggregateUsage([nameless], { by: "source" });
+    expect(bucket?.key).toBe("(no source)");
   });
 
   it("keeps cross-file dedup when folds are separated in time", () => {

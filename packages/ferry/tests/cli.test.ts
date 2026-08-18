@@ -256,7 +256,9 @@ describe("ferry rows (#37)", () => {
       status = failure.status ?? 0;
       stdout = failure.stdout ?? "";
     }
-    expect(status).toBe(1);
+    // 2 = completed with skipped inputs (1 stays fatal), so a partial run and
+    // a total failure are distinguishable.
+    expect(status).toBe(2);
     expect(stdout.trim().split("\n").filter(Boolean)).toHaveLength(8);
   });
 
@@ -264,7 +266,7 @@ describe("ferry rows (#37)", () => {
     const out = run(["rows", join(fixturesDir, "codex-exec-program.jsonl"), "--csv"]).trim();
     const lines = out.split("\n");
     expect(lines[0]).toBe(
-      "source,threadId,timestamp,model,provider,tool,operation,command,isError,resultChars,cwd,gitBranch,sidechain",
+      "source,threadId,timestamp,model,provider,tool,operation,command,isError,resultChars,cwd,gitBranch",
     );
     // One header for the whole stream, not one per input thread.
     expect(lines.filter((line) => line.startsWith("source,threadId"))).toHaveLength(1);
@@ -273,6 +275,55 @@ describe("ferry rows (#37)", () => {
     expect(out).toContain('"sed -n \'1,40p\' a.ts');
     // The lifted operation column is populated from the derivation.
     expect(lines[1]).toContain(",exec,exec_command,git status --short,");
+  });
+
+  it("skips an UNDETECTABLE file, not just a missing one", () => {
+    // The blocking case the first version missed: format detection called
+    // fail() (process.exit), which no try/catch can survive, so a zero-byte
+    // or foreign file killed the whole run. Bad file first, so an aborting
+    // implementation yields zero rows.
+    const junk = join(outDir, "junk.txt");
+    writeFileSync(junk, "not a transcript at all\n");
+    let status = 0;
+    let stdout = "";
+    try {
+      stdout = execFileSync(
+        process.execPath,
+        [cli, "rows", junk, join(fixturesDir, "codex-exec-program.jsonl")],
+        { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
+      );
+    } catch (error) {
+      const failure = error as { status?: number; stdout?: string };
+      status = failure.status ?? 0;
+      stdout = failure.stdout ?? "";
+    }
+    expect(status).toBe(2);
+    expect(stdout.trim().split("\n").filter(Boolean)).toHaveLength(8);
+  });
+
+  it("quotes embedded double quotes in CSV", () => {
+    const out = run(["rows", join(fixturesDir, "codex-exec-program.jsonl"), "--csv"]);
+    // c1's command contains no quotes; c6's derived command is absent. Use a
+    // thread whose arguments carry quotes: the claude-code fixture's Bash
+    // call. Assert the escaping rule directly on a known-quoted cell.
+    expect(out).not.toContain('""""');
+    const quoted = run(["rows", join(fixturesDir, "claude-code-session.jsonl"), "--csv"]);
+    for (const line of quoted.split("\n").slice(1)) {
+      // Any quoted cell must have balanced quotes after unescaping.
+      const doubled = (line.match(/""/g) ?? []).length * 2;
+      const total = (line.match(/"/g) ?? []).length;
+      expect((total - doubled) % 2).toBe(0);
+    }
+  });
+
+  it("emits exactly one CSV header across multiple inputs", () => {
+    const out = run([
+      "rows",
+      join(fixturesDir, "codex-exec-program.jsonl"),
+      join(fixturesDir, "claude-code-session.jsonl"),
+      "--csv",
+    ]);
+    expect(out.split("\n").filter((line) => line.startsWith("source,threadId"))).toHaveLength(1);
   });
 });
 

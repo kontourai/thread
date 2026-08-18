@@ -51,7 +51,14 @@ export interface UsageBucket {
  * lives on the accumulator, so folding two overlapping imports separately
  * counts a shared message once, just as passing them in one array does.
  */
-export function createUsageAccumulator(options: AggregateUsageOptions = {}) {
+export interface UsageAccumulator {
+  /** Fold one thread in. Safe to call across many imports; dedup is retained. */
+  add(thread: Thread): void;
+  /** Buckets so far, sorted by ascending key. */
+  result(): UsageBucket[];
+}
+
+export function createUsageAccumulator(options: AggregateUsageOptions = {}): UsageAccumulator {
   const by = options.by ?? "model";
   const buckets = new Map<string, UsageBucket>();
   // Imports can overlap or include the same session more than once. Canonical
@@ -147,6 +154,12 @@ function usageKey(
       // design — `sourceVersion` belongs to a later dimension rather than
       // baked into this key, so upgrading a CLI does not split a harness in
       // two mid-corpus.
-      return thread.metadata?.source ?? "unknown";
+      //
+      // Self-describing rather than "unknown": this bucket is a DERIVED
+      // absence, and a source could legitimately be named `unknown`. (The
+      // model dimension above still says "unknown" — changing an existing
+      // bucket key would break consumers, so it is left alone and tracked
+      // separately.)
+      return thread.metadata?.source ?? "(no source)";
   }
 }

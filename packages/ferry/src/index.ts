@@ -8,3 +8,4 @@ export {
   type ImportOptions,
   type OutputFormat,
 } from "./convert.js";
+export * from "./rows.js";

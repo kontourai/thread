@@ -21,7 +21,7 @@ import {
   type OutputFormat,
 } from "./convert.js";
 import { detectFormat, type InputFormat } from "./detect.js";
-import { formatRowsCsv, formatRowsJsonl, toolCallRows } from "./rows.js";
+import { csvHeader, formatRowCsv, formatRowJsonl, toolCallRows } from "./rows.js";
 
 const program = new Command();
 
@@ -74,29 +74,8 @@ function resolveInputFormat(
  */
 const STREAM_THRESHOLD = 256 * 1024 * 1024;
 
-async function readInput(file: string): Promise<string | string[]> {
-  const path = resolve(file);
-  try {
-    if (statSync(path).size > STREAM_THRESHOLD) {
-      const lines: string[] = [];
-      const reader = createInterface({
-        input: createReadStream(path, "utf-8"),
-        crlfDelay: Number.POSITIVE_INFINITY,
-      });
-      for await (const line of reader) lines.push(line);
-      return lines;
-    }
-    return readFileSync(path, "utf-8");
-  } catch (error) {
-    fail(`cannot read ${file}: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
-
-/**
- * Read for `rows`, which must survive a bad file rather than exit: shares the
- * streaming threshold with `readInput` but throws instead of calling `fail`.
- */
-async function readRowsInput(file: string): Promise<string | string[]> {
+/** The single read implementation; wrappers decide whether failure exits or throws. */
+async function readFileContent(file: string): Promise<string | string[]> {
   const path = resolve(file);
   if (statSync(path).size > STREAM_THRESHOLD) {
     const lines: string[] = [];
@@ -108,6 +87,41 @@ async function readRowsInput(file: string): Promise<string | string[]> {
     return lines;
   }
   return readFileSync(path, "utf-8");
+}
+
+async function readInput(file: string): Promise<string | string[]> {
+  try {
+    return await readFileContent(file);
+  } catch (error) {
+    fail(`cannot read ${file}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/**
+ * Resolve a format, THROWING on failure. `resolveInputFormat` calls `fail`,
+ * which is `process.exit` and therefore uncatchable — so `rows` (which must
+ * survive a bad file) has to detect through this instead. Missing this half
+ * meant a zero-byte or foreign file still killed the whole run: the one bad
+ * input class the original skip path handled was a MISSING file, because
+ * only that one throws from `statSync`.
+ */
+function resolveInputFormatOrThrow(
+  file: string,
+  content: string | string[],
+  requested: string,
+): InputFormat {
+  if (requested !== "auto") {
+    if (!INPUT_FORMATS.includes(requested as InputFormat)) {
+      throw new Error(`unknown input format: ${requested}`);
+    }
+    return requested as InputFormat;
+  }
+  const sample = typeof content === "string" ? content : content.slice(0, 20).join("\n");
+  const detected = detectFormat(sample);
+  if (!detected) {
+    throw new Error(`could not detect the format of ${file}; pass --from <format>`);
+  }
+  return detected;
 }
 
 /** thread-2.json for the second thread of a multi-thread input. */
@@ -309,10 +323,12 @@ program
   .argument("<inputs...>", "input file(s)")
   .option("-f, --from <format>", `input format (auto, ${INPUT_FORMATS.join(", ")})`, "auto")
   .option("--csv", "emit CSV instead of JSONL (a narrower projection)")
-  .action(async (inputs: string[], options: { from: string; csv?: boolean }) => {
-    // Streamed per file and written as we go: the whole point of this verb is
-    // corpora too large to hold, so it must never accumulate rows.
-    if (options.csv) console.log(formatRowsCsv([]));
+  .option("--window <Nd>", "only calls from the last N days")
+  .action(async (inputs: string[], options: { from: string; csv?: boolean; window?: string }) => {
+    const since = parseWindow(options.window, () => Date.now());
+    // Written a ROW at a time: nothing larger than one record is materialized,
+    // so the claim in the README holds for a session of any size.
+    if (options.csv) console.log(csvHeader());
     // Unlike `convert`/`usage`, a bad file does NOT abort the run. This verb
     // is pointed at whole session directories, where one unreadable or
     // foreign file among thousands is ordinary — losing the other 6,899
@@ -320,29 +336,45 @@ program
     // the exit code still reports that something was skipped, so a script
     // can tell a partial run from a complete one.
     let skipped = 0;
+    let notConversations = 0;
     for (const file of inputs) {
       try {
-        const content = await readRowsInput(file);
-        const from = resolveInputFormat(file, content, options.from);
+        const content = await readFileContent(file);
+        const from = resolveInputFormatOrThrow(file, content, options.from);
         for (const thread of importThreads(content, from, {
           onWarn: warn,
           sessionId: sessionIdFrom(file),
         })) {
-          const rows = toolCallRows(thread);
-          if (rows.length === 0) continue;
-          const text = options.csv
-            ? formatRowsCsv(rows).split("\n").slice(1).join("\n")
-            : formatRowsJsonl(rows);
-          if (text.length > 0) console.log(text);
+          for (const row of toolCallRows(thread)) {
+            if (since !== undefined && row.timestamp < since) continue;
+            console.log(options.csv ? formatRowCsv(row) : formatRowJsonl(row));
+          }
         }
       } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        // "No conversation events" is a deliberate importer outcome, not a
+        // failure: a sessions directory legitimately contains files that are
+        // not transcripts at all (Claude Code writes bridge sidecars keyed
+        // bridgeSessionId/lastSequenceNum). Counting those as skips made the
+        // README's own advertised invocation exit non-zero every time on a
+        // real corpus — 1,652 of 1,802 files here — which trains the reader
+        // to ignore the signal.
+        if (/no .*(conversation|messages).* found/i.test(message)) {
+          notConversations += 1;
+          continue;
+        }
         skipped += 1;
-        warn(`${file}: ${error instanceof Error ? error.message : String(error)}`);
+        warn(`${file}: ${message}`);
       }
     }
+    if (notConversations > 0) {
+      warn(`${notConversations} input(s) contained no conversation to read`);
+    }
     if (skipped > 0) {
+      // 2, not 1: a partial run and a total failure must not be the same
+      // signal. `fail` still exits 1 for a fatal error.
       warn(`${skipped} input(s) skipped`);
-      process.exitCode = 1;
+      process.exitCode = 2;
     }
   });
 

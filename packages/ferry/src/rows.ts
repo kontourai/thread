@@ -33,11 +33,23 @@ export interface ToolCallRow {
   derived?: Record<string, unknown>;
   /** True/false once a result was seen; absent when the call is unpaired. */
   isError?: boolean;
-  /** Characters of result text, absent when the call is unpaired. */
+  /**
+   * Characters of result TEXT. Image and file result parts contribute 0, so
+   * a row can read `resultChars: 0` for a result that was not empty — 126 of
+   * 18,657 Claude Code results in a sampled corpus have no text part. Use
+   * `--jsonl` and inspect the thread if that distinction matters.
+   */
   resultChars?: number;
-  /** Claude Code subagent traffic. */
-  sidechain?: boolean;
 }
+
+// Deliberately NO `sidechain` column. Claude Code subagent traffic lives in
+// separate transcript files in current versions, not as inline sidechain
+// lines: importing 40 real sessions with `includeSidechains: true` produced
+// zero sidechain messages, and a full-corpus run produced zero such rows. A
+// column whose name asserts a distinction nothing populates is the exact
+// label-vs-derivation defect this repo keeps finding — better absent than
+// permanently false. Reinstate it together with an importer that actually
+// reads those files.
 
 function resultText(result: ToolResult): number {
   let total = 0;
@@ -56,6 +68,10 @@ function resultText(result: ToolResult): number {
  * rather than defaulted — a missing result is not a successful one.
  */
 export function toolCallRows(thread: Thread): ToolCallRow[] {
+  // Last write wins on a repeated toolCallId. Real transcripts do repeat one
+  // (31 occurrences across 8 sampled sessions) but every observed pair was
+  // identical in length and outcome, so the choice is currently unobservable;
+  // it is stated rather than left implicit.
   const results = new Map<string, ToolResult>();
   for (const message of thread.messages) {
     if (message.role !== "tool") continue;
@@ -63,13 +79,20 @@ export function toolCallRows(thread: Thread): ToolCallRow[] {
   }
 
   const rows: ToolCallRow[] = [];
+  // One row per CALL, not per occurrence. Claude Code can write the same
+  // assistant line twice (same uuid, same message.id) and the importer merges
+  // split events by message.id, so an identical tool_call part can appear
+  // twice inside one message — found once in 72,735 real rows. That would
+  // double-count in exactly the `GROUP BY tool` the README demonstrates.
+  const emitted = new Set<string>();
   for (const message of thread.messages) {
     if (message.role !== "assistant") continue;
     for (const part of message.content) {
       if (part.type !== "tool_call") continue;
       const call: ToolCall = part.toolCall;
+      if (emitted.has(call.id)) continue;
+      emitted.add(call.id);
       const result = results.get(call.id);
-      const sidechain = message.metadata?.["sidechain"];
       rows.push({
         source: thread.metadata?.source,
         sourceVersion: thread.metadata?.sourceVersion,
@@ -85,7 +108,6 @@ export function toolCallRows(thread: Thread): ToolCallRow[] {
         ...(call.parsedArguments ? { parsedArguments: call.parsedArguments } : {}),
         ...(call.derived ? { derived: call.derived } : {}),
         ...(result ? { isError: result.isError === true, resultChars: resultText(result) } : {}),
-        ...(sidechain === true ? { sidechain: true } : {}),
       });
     }
   }
@@ -95,6 +117,21 @@ export function toolCallRows(thread: Thread): ToolCallRow[] {
 /** One JSON object per line — the shape DuckDB/jq read directly. */
 export function formatRowsJsonl(rows: readonly ToolCallRow[]): string {
   return rows.map((row) => JSON.stringify(row)).join("\n");
+}
+
+/** One row, one line. The CLI writes through this so nothing larger than a single record is ever materialized. */
+export function formatRowJsonl(row: ToolCallRow): string {
+  return JSON.stringify(row);
+}
+
+/** Header for the CSV projection, emitted once per run. */
+export function csvHeader(): string {
+  return CSV_COLUMNS.join(",");
+}
+
+/** One row as a CSV line, without a header. */
+export function formatRowCsv(row: ToolCallRow): string {
+  return formatRowsCsv([row]).split("\n")[1] ?? "";
 }
 
 const CSV_COLUMNS = [
@@ -110,7 +147,6 @@ const CSV_COLUMNS = [
   "resultChars",
   "cwd",
   "gitBranch",
-  "sidechain",
 ] as const;
 
 function csvCell(value: unknown): string {
@@ -154,7 +190,6 @@ export function formatRowsCsv(rows: readonly ToolCallRow[]): string {
       resultChars: row.resultChars,
       cwd: row.cwd,
       gitBranch: row.gitBranch,
-      sidechain: row.sidechain,
     };
     lines.push(CSV_COLUMNS.map((column) => csvCell(cells[column])).join(","));
   }
