@@ -206,12 +206,9 @@ function stepClaude(event: ConversationEvent, state: ClaudeReducerState): void {
           // otherwise buckets everything under "". Consume the entry to keep
           // the map bounded; a genuinely unpaired result keeps "".
           const callId = b["tool_use_id"];
-          const pendingNames = state.pendingToolNames ?? {};
+          const pendingNames = (state.pendingToolNames ??= {});
           const resolvedName = pendingNames[callId] ?? "";
-          if (callId in pendingNames) {
-            const { [callId]: _consumed, ...rest } = pendingNames;
-            state.pendingToolNames = rest;
-          }
+          delete pendingNames[callId];
           toolResults.push({
             toolCallId: callId,
             name: resolvedName,
@@ -285,7 +282,7 @@ function stepClaude(event: ConversationEvent, state: ClaudeReducerState): void {
         typeof b["name"] === "string"
       ) {
         const input = b["input"];
-        state.pendingToolNames = { ...(state.pendingToolNames ?? {}), [b["id"]]: b["name"] };
+        (state.pendingToolNames ??= {})[b["id"]] = b["name"];
         content.push({
           type: "tool_call",
           toolCall: {

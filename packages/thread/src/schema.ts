@@ -10,7 +10,7 @@
 
 import { z } from "zod";
 
-export const THREAD_SCHEMA_VERSION = "1.0.0";
+export const THREAD_SCHEMA_VERSION = "1.1.0";
 export const SCHEMA_NAME = "@kontourai/thread";
 
 // ---------------------------------------------------------------------------
@@ -77,19 +77,34 @@ export type ContentPart = z.infer<typeof ContentPart>;
  * `arguments` carries the raw argument string exactly as the source emitted it
  * (usually JSON, but some tools emit free-form strings). `parsedArguments` is
  * present when the source provided — or the importer could recover — a
- * structured form.
+ * structured form OF THE SAME ARGUMENTS: exporters re-emit it as the model's
+ * literal tool input, so nothing derived or summarized may go there.
+ *
+ * `derived` is the opposite contract: importer-produced analysis ABOUT the
+ * call, keyed by the producing importer, never source-provided and never a
+ * replay input. Exporters must ignore it. It exists because some tools take
+ * an opaque payload — Codex's `exec` takes a JavaScript program, not
+ * arguments — where the only way to make the call queryable is a documented
+ * heuristic, and putting a heuristic in `parsedArguments` would assert on the
+ * wire that the model called the tool with keys it never sent.
  */
 export const ToolCall = z.object({
   id: ToolCallId,
   name: z.string(),
   arguments: z.string(),
   parsedArguments: z.record(z.string(), z.unknown()).optional(),
+  derived: z.record(z.string(), z.unknown()).optional(),
 });
 export type ToolCall = z.infer<typeof ToolCall>;
 
 export const ToolResult = z.object({
   toolCallId: ToolCallId,
-  /** Tool name, when the source records it on the result ("" when unknown). */
+  /**
+   * Tool name. Importers that can pair a result with its call carry the
+   * call's name across (claude-code, codex, opencode); `""` means genuinely
+   * unpaired — a result whose call was never seen — not "this source does
+   * not record it".
+   */
   name: z.string(),
   content: z.array(ContentPart),
   isError: z.boolean().optional(),

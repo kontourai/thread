@@ -135,7 +135,9 @@ describe("ferry CLI (built binary)", () => {
       "thread",
     ]);
     const thread = JSON.parse(out);
-    expect(thread.schemaVersion).toBe("1.0.0");
+    // Bumped to 1.1.0 by the additive optional ToolCall.derived field
+    // (repo rule: a schema change updates THREAD_SCHEMA_VERSION per semver).
+    expect(thread.schemaVersion).toBe("1.1.0");
     expect(thread.metadata.source).toBe("codex");
   });
 
