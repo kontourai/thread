@@ -940,3 +940,112 @@ describe("round trips", () => {
     }
   });
 });
+
+describe("claude-code tool result names (#38)", () => {
+  const thread = importFromClaudeCode(fixture("claude-code-session.jsonl"));
+  const results = thread.messages.flatMap((m) => (m.role === "tool" ? m.toolResults : []));
+  const calls = new Map(
+    thread.messages
+      .flatMap((m) => (m.role === "assistant" ? m.content : []))
+      .filter((c) => c.type === "tool_call")
+      .map((c) => [c.toolCall.id, c.toolCall.name] as const),
+  );
+
+  it("names every paired result after its call", () => {
+    expect(results.length).toBeGreaterThan(0);
+    for (const result of results) {
+      // Only paired results — an unpaired one legitimately keeps "".
+      if (!calls.has(result.toolCallId)) continue;
+      expect(result.name).toBe(calls.get(result.toolCallId));
+      expect(result.name).not.toBe("");
+    }
+  });
+});
+
+describe("codex exec legibility (#32, #33, #38)", () => {
+  const thread = importFromCodex(fixture("codex-exec-program.jsonl"));
+  const calls = thread.messages.flatMap((m) =>
+    m.role === "assistant" ? m.content.filter((c) => c.type === "tool_call").map((c) => c.toolCall) : [],
+  );
+  const byId = (id: string) => calls.find((c) => c.id === id)!;
+  const results = thread.messages.flatMap((m) => (m.role === "tool" ? m.toolResults : []));
+  const derivedOf = (id: string) =>
+    byId(id).derived?.["codexExec"] as Record<string, unknown> | undefined;
+
+  it("recovers a structured form for custom_tool_call, not only function_call (#32)", () => {
+    // The `function_call`-only gate left every Codex `exec` — the majority of
+    // tool calls in a real corpus — with no structured form at all.
+    expect(byId("c1").derived).toBeDefined();
+  });
+
+  it("recovers the operation and the literal command (#33)", () => {
+    expect(derivedOf("c1")).toMatchObject({
+      operation: "exec_command",
+      commands: ["git status --short"],
+      heuristic: true,
+    });
+    // The verbatim program stays the lossless record.
+    expect(byId("c1").arguments).toContain("tools.exec_command");
+  });
+
+  it("keeps the derivation OUT of parsedArguments (#33 review)", () => {
+    // Exporters re-emit parsedArguments as the model's literal tool input, so
+    // a heuristic there asserts on the wire that the model called `exec` with
+    // keys it never sent. Before this change the field was simply absent,
+    // which is honest — confidently wrong is worse than empty.
+    expect(byId("c1").parsedArguments).toBeUndefined();
+  });
+
+  it("distinguishes a non-shell exec from a command (#33)", () => {
+    // 38% of exec calls in a sampled corpus run no shell command at all.
+    expect(derivedOf("c2")).toMatchObject({ operation: "write_stdin" });
+    expect(derivedOf("c2")?.["commands"]).toBeUndefined();
+  });
+
+  it("reports a program that invokes several operations as mixed", () => {
+    expect(derivedOf("c3")).toMatchObject({
+      operation: "mixed",
+      operations: ["exec_command", "write_stdin"],
+    });
+    // One entry is one `cmd` literal, which is often a multi-line script.
+    expect(derivedOf("c3")?.["commands"]).toEqual([
+      "sed -n '1,40p' a.ts\nsed -n '1,40p' b.ts",
+    ]);
+  });
+
+  it("never derives for a tool whose payload is not a program", () => {
+    // Both are apply_patch. c4 contains `cmd:` in its diffed source; c5
+    // contains `tools.map(`/`tools.filter(`, which satisfied an earlier
+    // `tools.*` gate and fabricated an operation on 61 real payloads across
+    // a 12.2 GB corpus. Gating on the tool NAME is exact.
+    expect(byId("c4").derived).toBeUndefined();
+    expect(byId("c5").derived).toBeUndefined();
+  });
+
+  it("does not emit an unresolved template as a command", () => {
+    // A backtick `cmd` still containing ${…} was assembled at runtime: that
+    // command string was never run, and nothing would mark it partial.
+    expect(derivedOf("c6")).toMatchObject({ operation: "exec_command" });
+    expect(derivedOf("c6")?.["commands"]).toBeUndefined();
+  });
+
+  it("still parses a JSON function_call payload into parsedArguments", () => {
+    expect(byId("c7").parsedArguments).toMatchObject({ command: ["ls", "-la"] });
+    expect(byId("c7").derived).toBeUndefined();
+  });
+
+  it("derives for js_repl too, the other program-payload tool", () => {
+    // js_repl is rarer than exec (34 vs ~309k in a local corpus) but takes
+    // the same program payload, so it is in the name gate — and was
+    // otherwise unexercised by any fixture.
+    expect(derivedOf("c8")).toMatchObject({
+      operation: "exec_command",
+      commands: ["node -e 'console.log(1)'"],
+    });
+  });
+
+  it("carries the call name onto its result (#38)", () => {
+    expect(results.find((r) => r.toolCallId === "c1")?.name).toBe("exec");
+    expect(results.find((r) => r.toolCallId === "c2")?.name).toBe("exec");
+  });
+});

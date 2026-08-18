@@ -161,6 +161,13 @@ interface ClaudeReducerState {
   version?: string;
   gitBranch?: string;
   title?: string;
+  /**
+   * Tool-call names awaiting their result, keyed by tool_use id (#38).
+   * Bounded rather than a growing index: the entry is consumed when its
+   * tool_result arrives, and results follow their call closely. A plain
+   * record because the incremental importer serializes this state as JSON.
+   */
+  pendingToolNames?: Record<string, string>;
 }
 
 function claudeThread(state: ClaudeReducerState): Thread {
@@ -194,9 +201,17 @@ function stepClaude(event: ConversationEvent, state: ClaudeReducerState): void {
         if (typeof block !== "object" || block === null) continue;
         const b = block as Record<string, unknown>;
         if (b["type"] === "tool_result" && typeof b["tool_use_id"] === "string") {
+          // Carry the call's name onto its result (#38): Claude Code records
+          // the name only on the tool_use block, so a result-side rollup
+          // otherwise buckets everything under "". Consume the entry to keep
+          // the map bounded; a genuinely unpaired result keeps "".
+          const callId = b["tool_use_id"];
+          const pendingNames = (state.pendingToolNames ??= {});
+          const resolvedName = pendingNames[callId] ?? "";
+          delete pendingNames[callId];
           toolResults.push({
-            toolCallId: b["tool_use_id"],
-            name: "",
+            toolCallId: callId,
+            name: resolvedName,
             content: contentPartsFromBlocks(b["content"]),
             isError: typeof b["is_error"] === "boolean" ? b["is_error"] : undefined,
           });
@@ -267,6 +282,7 @@ function stepClaude(event: ConversationEvent, state: ClaudeReducerState): void {
         typeof b["name"] === "string"
       ) {
         const input = b["input"];
+        (state.pendingToolNames ??= {})[b["id"]] = b["name"];
         content.push({
           type: "tool_call",
           toolCall: {

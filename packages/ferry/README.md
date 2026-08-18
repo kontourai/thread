@@ -26,6 +26,13 @@ Codex fixture provenance: `codex-forked-rollout.jsonl` (lines 1-4 = rollout
 byte-copied from real local rollouts — only free-text values are replaced
 with `[redacted]`; keys, nesting, and every non-text value remain as written
 by Codex. `codex-rollout.jsonl` is a composed fixture whose individual usage
-records mirror observed shapes.
+records mirror observed shapes. `codex-exec-program.jsonl` is composed, with
+each `exec` payload shaped after the dominant real form measured across a
+12.2 GB local corpus: a single double-quoted `cmd` string (255,070
+occurrences) rather than an array (6 occurrences, none of them JSON-parseable
+— which is why array literals are deliberately not recovered), plus the
+single-quoted and backtick variants (1,009 / 3,472) and two `apply_patch`
+payloads, one of which contains `tools.map(` in its diffed source because
+that shape defeated an earlier gate.
 
 License: Apache-2.0

@@ -19,6 +19,20 @@
  *
  * Known limitations (deliberate):
  * - `tool_search_*` items are skipped.
+ * - `exec` (and `js_repl`) carry a JavaScript PROGRAM, not arguments, so
+ *   `parsedArguments` is absent for them. A best-effort scrape of the program
+ *   text lands on `toolCall.derived.codexExec` (`heuristic: true`):
+ *   `operation` (the invoked `tools.*` function, `"mixed"` when several),
+ *   `operations` when mixed, and `commands` — each entry one literal `cmd`
+ *   value, which is frequently a MULTI-LINE SHELL SCRIPT rather than a single
+ *   command. A `cmd` assembled from a variable, and a backtick template still
+ *   containing `${…}`, are absent rather than guessed; non-JSON array
+ *   literals are not recovered (comma-splitting them corrupts values that
+ *   contain commas). At most 32 commands per call are retained, and hitting
+ *   that cap sets `commandsTruncated: true`.
+ * - Tool RESULTS carry the name of their call: Codex records it only on the
+ *   call, so the importer pairs them by `call_id`. `""` now means genuinely
+ *   unpaired.
  * - `reasoning.encrypted_content` is dropped; only summary text is kept.
  * - Codex `last_token_usage.input_tokens` includes cached reads (observed:
  *   98/98 cumulative-delta-consistent samples) and is normalized to exclusive
@@ -92,6 +106,14 @@ interface CodexReducerState {
   lastRateLimits?: Record<string, unknown>;
   unattributedUsage?: CodexUnattributedUsage;
   duplicateAgentMessageText?: string;
+  /**
+   * Tool-call names awaiting their result, keyed by call id (#38). Bounded,
+   * not a growing index: an entry is deleted the moment its output arrives,
+   * and outputs follow their call closely in these rollouts, so the map holds
+   * only the in-flight calls. A plain record, not a Map, because the
+   * incremental importer serializes this state as JSON.
+   */
+  pendingToolNames?: Record<string, string>;
 }
 
 function codexThread(state: CodexReducerState): Thread {
@@ -199,12 +221,127 @@ function stepCodex(record: z.infer<typeof RolloutLine>, state: CodexReducerState
     const name = typeof payload["name"] === "string" ? payload["name"] : "unknown";
     const callId = typeof payload["call_id"] === "string" ? payload["call_id"] : typeof payload["id"] === "string" ? payload["id"] : nextId();
     const arguments_ = typeof payload["arguments"] === "string" ? payload["arguments"] : typeof payload["input"] === "string" ? payload["input"] : "{}";
-    let parsedArguments: Record<string, unknown> | undefined; if (type === "function_call") { try { parsedArguments = asRecord(JSON.parse(arguments_)); } catch { /* deliberate */ } }
-    append({ type: "tool_call", toolCall: { id: callId, name, arguments: arguments_, parsedArguments } });
+    // Parse for BOTH call types (#32). Gating this on `function_call` left
+    // `parsedArguments` permanently undefined for `custom_tool_call`, which is
+    // how Codex emits `exec` — the majority of tool calls in a real corpus.
+    let parsedArguments: Record<string, unknown> | undefined;
+    try { parsedArguments = asRecord(JSON.parse(arguments_)); } catch { /* not JSON; see below */ }
+    // `exec` is not a tool, it is an interpreter: its payload is a JS program,
+    // so JSON.parse never succeeds and the tool NAME alone answers nothing —
+    // one bar covering shell commands, stdin writes and patch application
+    // alike (#33). The recovery goes on `derived`, NEVER on parsedArguments:
+    // exporters re-emit parsedArguments as the model's literal tool input, so
+    // a heuristic there would assert on the wire that the model called `exec`
+    // with `{operation, commands}` — keys it never sent. `arguments` keeps the
+    // verbatim program, which remains the only lossless record.
+    const derived =
+      !parsedArguments && PROGRAM_PAYLOAD_TOOLS.has(name)
+        ? deriveExecOperation(arguments_)
+        : undefined;
+    (state.pendingToolNames ??= {})[callId] = name;
+    append({
+      type: "tool_call",
+      toolCall: {
+        id: callId,
+        name,
+        arguments: arguments_,
+        parsedArguments,
+        ...(derived ? { derived: { codexExec: { ...derived, heuristic: true } } } : {}),
+      },
+    });
   } else if (type === "function_call_output" || type === "custom_tool_call_output") {
     flush(); const callId = typeof payload["call_id"] === "string" ? payload["call_id"] : nextId();
-    state.messages.push({ id: nextId(), threadId, role: "tool", timestamp, toolResults: [{ toolCallId: callId, name: "", content: [{ type: "text", text: extractOutputText(payload["output"]) }] }] });
+    // Carry the call's name onto its result (#38). Codex records the name only
+    // on the call, so a result-side rollup otherwise buckets everything under
+    // "" and looks like it worked. Consume the pending entry so the map stays
+    // bounded; a genuinely unpaired result keeps "" — the case the field's
+    // contract is actually for.
+    const pendingNames = (state.pendingToolNames ??= {});
+    const resolvedName = pendingNames[callId] ?? "";
+    delete pendingNames[callId];
+    state.messages.push({ id: nextId(), threadId, role: "tool", timestamp, toolResults: [{ toolCallId: callId, name: resolvedName, content: [{ type: "text", text: extractOutputText(payload["output"]) }] }] });
   }
+}
+
+/**
+ * Recover what a Codex `exec` program actually did (#33).
+ *
+ * `exec` takes a JavaScript program, not JSON arguments, so `ToolCall.name`
+ * is `exec` for every one of them regardless of whether the program ran a
+ * shell command, wrote to a live process's stdin, or applied a patch. In a
+ * sampled corpus `exec` was ~74% of Codex tool calls and ~38% of those ran no
+ * shell command at all, so grouping by name alone answers nothing.
+ *
+ * This is a HEURISTIC over source text, and is deliberately conservative:
+ * - `operation` is the invoked `tools.<fn>` when the program invokes exactly
+ *   one distinct function, `"mixed"` when it invokes several, and is omitted
+ *   when none is recognized.
+ * - `commands` holds only literal `cmd` values. A command built from a
+ *   variable is not recoverable and is simply absent — never guessed.
+ * Returns undefined when nothing is recognized, so `parsedArguments` stays
+ * absent rather than asserting an empty structure.
+ */
+const EXEC_TOOL_CALL = /\btools\.([A-Za-z_$][\w$]*)\s*\(/g;
+const EXEC_CMD_VALUE =
+  /(?:"cmd"|'cmd'|\bcmd)\s*:\s*(\[[^\]]*\]|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)/g;
+/**
+ * Tools whose payload is a PROGRAM rather than arguments. Only these are
+ * scraped. The earlier gate — "the payload invokes some `tools.*` function" —
+ * is not a Codex-API detector at all: `tools` is an everyday identifier, so
+ * `tools.map(`/`tools.has(` inside PATCHED SOURCE CODE satisfied it, and 61
+ * of 20,081 real `apply_patch` payloads in a 12.2 GB corpus derived an
+ * operation that was never invoked. The tool name is already in hand at the
+ * call site and is exact.
+ */
+const PROGRAM_PAYLOAD_TOOLS: ReadonlySet<string> = new Set(["exec", "js_repl"]);
+/** One call cannot plausibly carry more literals than this; a crafted payload otherwise yields tens of thousands. */
+const MAX_DERIVED_COMMANDS = 32;
+
+function deriveExecOperation(source: string): Record<string, unknown> | undefined {
+  const operations = new Set<string>();
+  for (const match of source.matchAll(EXEC_TOOL_CALL)) operations.add(match[1]!);
+  // Secondary filter only — the caller has already restricted this to tools
+  // whose payload is a program (see PROGRAM_PAYLOAD_TOOLS).
+  if (operations.size === 0) return undefined;
+  const commands: string[] = [];
+  let truncated = false;
+  for (const match of source.matchAll(EXEC_CMD_VALUE)) {
+    if (commands.length >= MAX_DERIVED_COMMANDS) {
+      // Say so. A capped list that looks complete is the same lie this
+      // whole derivation exists to avoid — a consumer cannot otherwise
+      // distinguish "made exactly 32 commands" from "was cut off".
+      truncated = true;
+      break;
+    }
+    const raw = match[1]!.trim();
+    let value: unknown;
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      // A backtick template whose text still contains `${…}` was assembled at
+      // runtime: emitting it would be a command string that was never run,
+      // with nothing marking it partial. 2,806 of 3,472 backtick values in a
+      // live corpus are exactly this. Absent beats guessed.
+      if (raw.startsWith("`") && raw.endsWith("`")) {
+        if (raw.includes("${")) continue;
+        value = raw.slice(1, -1);
+      } else if (raw.startsWith("'") && raw.endsWith("'")) {
+        value = raw.slice(1, -1);
+      } else continue;
+      // A non-JSON array is deliberately NOT recovered: splitting it on commas
+      // corrupts values that contain commas or brackets, and array-valued
+      // `cmd` occurs 6 times in 12.2 GB (none of them JSON-parseable). Silent
+      // corruption is worse than absence.
+    }
+    const command = Array.isArray(value) ? value.map(String).join(" ") : String(value);
+    if (command.length > 0) commands.push(command);
+  }
+  return {
+    ...(operations.size === 1 ? { operation: [...operations][0] } : {}),
+    ...(operations.size > 1 ? { operation: "mixed", operations: [...operations].sort() } : {}),
+    ...(commands.length > 0 ? { commands } : {}),
+    ...(truncated ? { commandsTruncated: true } : {}),
+  };
 }
 
 function flushCodexPending(state: CodexReducerState): void {
