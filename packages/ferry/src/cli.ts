@@ -8,7 +8,7 @@ import { createInterface } from "node:readline";
 import { resolve, extname } from "node:path";
 import { Command } from "commander";
 import {
-  aggregateUsage,
+  createUsageAccumulator,
   getTextContent,
   type UsageAggregationDimension,
   type UsageBucket,
@@ -21,6 +21,7 @@ import {
   type OutputFormat,
 } from "./convert.js";
 import { detectFormat, type InputFormat } from "./detect.js";
+import { formatRowsCsv, formatRowsJsonl, toolCallRows } from "./rows.js";
 
 const program = new Command();
 
@@ -89,6 +90,24 @@ async function readInput(file: string): Promise<string | string[]> {
   } catch (error) {
     fail(`cannot read ${file}: ${error instanceof Error ? error.message : String(error)}`);
   }
+}
+
+/**
+ * Read for `rows`, which must survive a bad file rather than exit: shares the
+ * streaming threshold with `readInput` but throws instead of calling `fail`.
+ */
+async function readRowsInput(file: string): Promise<string | string[]> {
+  const path = resolve(file);
+  if (statSync(path).size > STREAM_THRESHOLD) {
+    const lines: string[] = [];
+    const reader = createInterface({
+      input: createReadStream(path, "utf-8"),
+      crlfDelay: Number.POSITIVE_INFINITY,
+    });
+    for await (const line of reader) lines.push(line);
+    return lines;
+  }
+  return readFileSync(path, "utf-8");
 }
 
 /** thread-2.json for the second thread of a multi-thread input. */
@@ -238,7 +257,7 @@ program
   .description("Aggregate assistant token usage from conversation files")
   .argument("<inputs...>", "input file(s)")
   .option("-f, --from <format>", `input format (auto, ${INPUT_FORMATS.join(", ")})`, "auto")
-  .option("--by <dimension>", "group by model, day, or thread", "model")
+  .option("--by <dimension>", "group by model, day, thread, or source", "model")
   .option("--window <Nd>", "include messages from the last N days")
   .option("--json", "print machine-readable JSON")
   .action(
@@ -246,26 +265,86 @@ program
       inputs: string[],
       options: { from: string; by: string; window?: string; json?: boolean },
     ) => {
-      if (!(["model", "day", "thread"] as const).includes(options.by as UsageAggregationDimension)) {
-        fail('invalid --by value (expected "model", "day", or "thread")');
+      if (
+        !(["model", "day", "thread", "source"] as const).includes(
+          options.by as UsageAggregationDimension,
+        )
+      ) {
+        fail('invalid --by value (expected "model", "day", "thread", or "source")');
       }
       // Read the clock exactly once at the CLI boundary; aggregation remains pure.
       const now = Date.now();
       const since = parseWindow(options.window, () => now);
-      const threads = [];
+      // Fold per file and release: collecting every Thread first made this
+      // verb impossible on a real archive, where the inputs it documents
+      // (a glob over a sessions directory) are thousands of files and tens of
+      // gigabytes. The accumulator keeps only buckets plus message ids, so
+      // cross-file dedup is preserved.
+      const accumulator = createUsageAccumulator({
+        by: options.by as UsageAggregationDimension,
+        since,
+      });
       for (const file of inputs) {
         const content = await readInput(file);
         const from = resolveInputFormat(file, content, options.from);
         try {
-          threads.push(...importThreads(content, from, { onWarn: warn, sessionId: sessionIdFrom(file) }));
+          for (const thread of importThreads(content, from, {
+            onWarn: warn,
+            sessionId: sessionIdFrom(file),
+          })) {
+            accumulator.add(thread);
+          }
         } catch (error) {
           fail(`${file}: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
-      const buckets = aggregateUsage(threads, { by: options.by as UsageAggregationDimension, since });
+      const buckets = accumulator.result();
       console.log(options.json ? JSON.stringify(buckets, null, 2) : formatUsageTable(buckets));
     },
   );
+
+program
+  .command("rows")
+  .description("Emit one row per tool call (JSONL or CSV) for ad-hoc analysis")
+  .argument("<inputs...>", "input file(s)")
+  .option("-f, --from <format>", `input format (auto, ${INPUT_FORMATS.join(", ")})`, "auto")
+  .option("--csv", "emit CSV instead of JSONL (a narrower projection)")
+  .action(async (inputs: string[], options: { from: string; csv?: boolean }) => {
+    // Streamed per file and written as we go: the whole point of this verb is
+    // corpora too large to hold, so it must never accumulate rows.
+    if (options.csv) console.log(formatRowsCsv([]));
+    // Unlike `convert`/`usage`, a bad file does NOT abort the run. This verb
+    // is pointed at whole session directories, where one unreadable or
+    // foreign file among thousands is ordinary — losing the other 6,899
+    // sessions to it would be absurd. Every failure is named on stderr and
+    // the exit code still reports that something was skipped, so a script
+    // can tell a partial run from a complete one.
+    let skipped = 0;
+    for (const file of inputs) {
+      try {
+        const content = await readRowsInput(file);
+        const from = resolveInputFormat(file, content, options.from);
+        for (const thread of importThreads(content, from, {
+          onWarn: warn,
+          sessionId: sessionIdFrom(file),
+        })) {
+          const rows = toolCallRows(thread);
+          if (rows.length === 0) continue;
+          const text = options.csv
+            ? formatRowsCsv(rows).split("\n").slice(1).join("\n")
+            : formatRowsJsonl(rows);
+          if (text.length > 0) console.log(text);
+        }
+      } catch (error) {
+        skipped += 1;
+        warn(`${file}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (skipped > 0) {
+      warn(`${skipped} input(s) skipped`);
+      process.exitCode = 1;
+    }
+  });
 
 program
   .command("formats")

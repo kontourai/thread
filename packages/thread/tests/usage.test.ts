@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { aggregateUsage, type AssistantMessage, type Thread } from "../src/index.js";
+import {
+  aggregateUsage,
+  type AssistantMessage,
+  createUsageAccumulator,
+  type Thread,
+  THREAD_SCHEMA_VERSION,
+} from "../src/index.js";
 
 const dayOne = Date.parse("2026-08-01T00:00:00.000Z");
 const dayTwo = Date.parse("2026-08-02T00:00:00.000Z");
@@ -241,3 +247,56 @@ describe("aggregateUsage", () => {
     expect(keys).toEqual(["a-model", "z-model", "\u00e4-model"]);
   });
 });
+
+describe("createUsageAccumulator (#36, #34)", () => {
+  const thread = (id: string, source: string, model: string, tokens: number): Thread => ({
+    schemaVersion: THREAD_SCHEMA_VERSION,
+    id,
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_000_000,
+    messages: [
+      {
+        id: `${id}:1`,
+        threadId: id,
+        role: "assistant",
+        timestamp: 1_700_000_000_000,
+        model,
+        content: [{ type: "text", text: "hi" }],
+        usage: { inputTokens: tokens, outputTokens: tokens },
+      },
+    ],
+    metadata: { source },
+  });
+
+  it("folding one thread at a time equals aggregating the array", () => {
+    const threads = [thread("a", "codex", "m1", 10), thread("b", "claude-code", "m2", 20)];
+    const accumulator = createUsageAccumulator({ by: "source" });
+    for (const t of threads) accumulator.add(t);
+    expect(accumulator.result()).toEqual(aggregateUsage(threads, { by: "source" }));
+  });
+
+  it("keeps cross-file dedup when folds are separated in time", () => {
+    // The property that makes streaming safe: the seen-set lives on the
+    // accumulator, so the same session imported twice — from overlapping
+    // globs, say — is counted once, exactly as the array form does.
+    const accumulator = createUsageAccumulator({ by: "model" });
+    accumulator.add(thread("a", "codex", "m1", 10));
+    accumulator.add(thread("a", "codex", "m1", 10));
+    const [bucket] = accumulator.result();
+    expect(bucket?.messages).toBe(1);
+    expect(bucket?.duplicatesSkipped).toBe(1);
+    expect(bucket?.inputTokens).toBe(10);
+  });
+
+  it("groups by the importing harness", () => {
+    const buckets = aggregateUsage(
+      [thread("a", "codex", "m1", 10), thread("b", "codex", "m2", 5), thread("c", "claude-code", "m1", 1)],
+      { by: "source" },
+    );
+    expect(buckets.map((b) => [b.key, b.inputTokens])).toEqual([
+      ["claude-code", 1],
+      ["codex", 15],
+    ]);
+  });
+});
+

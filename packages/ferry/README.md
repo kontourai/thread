@@ -20,6 +20,18 @@ Importers are grounded in real transcript shapes (including multi-hundred-MB
 JSONL files, which stream); each adapter documents what its target format
 cannot represent.
 
+`ferry rows` emits one JSON object per tool call (or `--csv` for a narrower
+projection), streamed per file so it can be pointed at a whole sessions
+directory. Each row carries the dimensions the schema keeps in different
+places — `source`/`sourceVersion`/`cwd`/`gitBranch` from the thread,
+`model`/`provider` from the owning assistant message, the tool's name and raw
+`arguments`, `parsedArguments` when the source supplied structure, `derived`
+for importer heuristics, and `isError`/`resultChars` joined from the matching
+`ToolResult` by `toolCallId`. Result columns are ABSENT for an unpaired call:
+a missing result is not a successful one. Unlike `convert`/`usage`, an
+unreadable input is warned about and skipped rather than aborting the run —
+the exit code still reports that something was skipped.
+
 Codex fixture provenance: `codex-forked-rollout.jsonl` (lines 1-4 = rollout
 2026-06-25T23-06-53-019f0252 lines 19-22) and `codex-rollout-variants.jsonl`
 (lines 1-4 = rollout 2026-03-27T22-21-41-019d32ad lines 8, 10, 11, 15) are

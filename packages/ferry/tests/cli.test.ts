@@ -196,3 +196,108 @@ describe("ferry CLI (built binary)", () => {
     ).toThrow(/could not detect/);
   });
 });
+
+describe("ferry rows (#37)", () => {
+  const rowsOf = (args: string[]) =>
+    run(["rows", ...args])
+      .trim()
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+
+  it("emits one row per tool call, joined to its result", () => {
+    const rows = rowsOf([join(fixturesDir, "codex-exec-program.jsonl")]);
+    expect(rows).toHaveLength(8);
+    const first = rows[0]!;
+    // Every dimension the analysis questions need, on one flat line.
+    expect(first).toMatchObject({
+      source: "codex",
+      threadId: "exec-session",
+      model: "gpt-5-codex",
+      tool: "exec",
+      toolCallId: "c1",
+      isError: false,
+    });
+    expect(first["resultChars"]).toBe(5);
+    // The derivation rides along, still marked as derived rather than input.
+    expect(
+      (first["derived"] as Record<string, Record<string, unknown>>)["codexExec"]?.["operation"],
+    ).toBe("exec_command");
+  });
+
+  it("leaves result columns ABSENT for an unpaired call", () => {
+    // A call with no result is not a successful call. Defaulting isError to
+    // false here would quietly invent an outcome the transcript never recorded.
+    const rows = rowsOf([join(fixturesDir, "codex-exec-program.jsonl")]);
+    const unpaired = rows.find((row) => row["toolCallId"] === "c3")!;
+    expect(unpaired["isError"]).toBeUndefined();
+    expect(unpaired["resultChars"]).toBeUndefined();
+  });
+
+  it("skips a bad input instead of losing the whole corpus", () => {
+    // The documented use is a whole sessions directory, where one unreadable
+    // or foreign file among thousands is ordinary. Rows from the good files
+    // must still arrive, and the exit code must still say something was
+    // skipped so a script can tell a partial run from a complete one.
+    let status = 0;
+    let stdout = "";
+    try {
+      stdout = execFileSync(
+        process.execPath,
+        [cli, "rows", join(fixturesDir, "codex-exec-program.jsonl"), join(outDir, "missing.jsonl")],
+        { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
+      );
+    } catch (error) {
+      const failure = error as { status?: number; stdout?: string };
+      status = failure.status ?? 0;
+      stdout = failure.stdout ?? "";
+    }
+    expect(status).toBe(1);
+    expect(stdout.trim().split("\n").filter(Boolean)).toHaveLength(8);
+  });
+
+  it("emits a narrower CSV projection with a single header", () => {
+    const out = run(["rows", join(fixturesDir, "codex-exec-program.jsonl"), "--csv"]).trim();
+    const lines = out.split("\n");
+    expect(lines[0]).toBe(
+      "source,threadId,timestamp,model,provider,tool,operation,command,isError,resultChars,cwd,gitBranch,sidechain",
+    );
+    // One header for the whole stream, not one per input thread.
+    expect(lines.filter((line) => line.startsWith("source,threadId"))).toHaveLength(1);
+    // A command containing a comma AND a newline is quoted, so the row
+    // survives it — the cell legitimately spans output lines.
+    expect(out).toContain('"sed -n \'1,40p\' a.ts');
+    // The lifted operation column is populated from the derivation.
+    expect(lines[1]).toContain(",exec,exec_command,git status --short,");
+  });
+});
+
+describe("ferry usage --by source (#34)", () => {
+  it("groups by the importing harness", () => {
+    const out = JSON.parse(
+      run([
+        "usage",
+        join(fixturesDir, "codex-rollout.jsonl"),
+        join(fixturesDir, "claude-code-session.jsonl"),
+        "--by",
+        "source",
+        "--json",
+      ]),
+    ) as Array<{ key: string }>;
+    expect(out.map((bucket) => bucket.key).sort()).toEqual(["claude-code", "codex"]);
+  });
+
+  it("rejects an unknown dimension by name", () => {
+    let message = "";
+    try {
+      execFileSync(process.execPath, [cli, "usage", join(fixturesDir, "codex-rollout.jsonl"), "--by", "harness"], {
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      message = String((error as { stderr?: string }).stderr ?? "");
+    }
+    expect(message).toContain('"source"');
+  });
+});
+

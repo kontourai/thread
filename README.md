@@ -25,6 +25,13 @@ ferry inspect ~/.claude/projects/<project>/<session>.jsonl
 # Convert a Codex rollout to canonical thread JSON
 ferry convert ~/.codex/sessions/2026/08/01/rollout-*.jsonl -o session.thread.json
 
+# One row per tool call, across a whole corpus, straight into a query engine
+ferry rows ~/.claude/projects/**/*.jsonl ~/.codex/sessions/**/*.jsonl > calls.jsonl
+duckdb -c "SELECT source, tool, count(*) FROM 'calls.jsonl' GROUP BY 1,2 ORDER BY 3 DESC"
+
+# Token usage grouped by harness
+ferry usage ~/.codex/sessions/**/*.jsonl --by source --json
+
 # Re-export a thread as an Anthropic Messages API body
 ferry convert session.thread.json --to anthropic-messages
 
