@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.0](https://github.com/kontourai/thread/compare/thread-v0.4.0...thread-v0.5.0) (2026-08-25)
+
+
+### Features
+
+* **thread:** add safe assistant answer references ([5c4bfbf](https://github.com/kontourai/thread/commit/5c4bfbf2e1f4d199bc2a9d6946504c23f8f0a4c6))
+* **thread:** publish safe assistant answer references ([1f3d927](https://github.com/kontourai/thread/commit/1f3d927f75d42b9c8aa5cc1ee21f747de0ec1d9a))
+
+
+### Fixes
+
+* **ferry:** preserve imported answer identity standing ([0669a21](https://github.com/kontourai/thread/commit/0669a2140ae1ab9d5fb4cdfbe926c011c7411872))
+* **thread:** fail closed on ref reflection traps ([cd707c6](https://github.com/kontourai/thread/commit/cd707c6cb692f041ea2d5f04aa2e2be92616e9a8))
+* **thread:** harden answer reference projection ([9b6660a](https://github.com/kontourai/thread/commit/9b6660a73092717e514900e4abdf9afe8d3262d1))
+
 ## [0.4.0](https://github.com/kontourai/thread/compare/thread-v0.3.0...thread-v0.4.0) (2026-08-25)
 
 
