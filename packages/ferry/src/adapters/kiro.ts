@@ -38,6 +38,7 @@ import type {
 } from "@kontourai/thread";
 import { THREAD_SCHEMA_VERSION } from "@kontourai/thread";
 import { asRecord, deterministicToolResultId, toLines, type JsonlInput } from "./shared.js";
+import type { MessageIdentityObservationSink } from "../answer.js";
 
 // `version` is a string tag ("v1") in real transcripts; typing it loosely
 // keeps a future tag change from silently deleting every line.
@@ -56,6 +57,7 @@ export interface KiroImportOptions {
   sessionId?: string;
   /** Called with a summary of skipped/unparseable records, if any. */
   onWarn?: (message: string) => void;
+  onMessageIdentity?: MessageIdentityObservationSink;
 }
 
 function bytesToBase64(bytes: unknown): string | undefined {
@@ -231,7 +233,7 @@ export function importFromKiro(jsonlContent: JsonlInput, options: KiroImportOpti
 
   const metadata: ThreadMetadata = { source: "kiro" };
 
-  return {
+  const thread: Thread = {
     schemaVersion: THREAD_SCHEMA_VERSION,
     id: threadId,
     messages,
@@ -239,6 +241,9 @@ export function importFromKiro(jsonlContent: JsonlInput, options: KiroImportOpti
     createdAt: messages[0]?.timestamp ?? Date.now(),
     updatedAt: messages[messages.length - 1]?.timestamp ?? Date.now(),
   };
+  // The thread id originates in the caller/filename, not the source bytes.
+  for (const message of messages) options.onMessageIdentity?.(message, "adapter-fallback");
+  return thread;
 }
 
 function toToolResult(

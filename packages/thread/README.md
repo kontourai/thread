@@ -47,7 +47,7 @@ visible text candidates only; intentionally excluded reasoning/tools are not
 misreported as truncation. Source metadata has an explicit zero-byte budget.
 
 ```ts
-import { createObservedMessageIdentity, createThreadAnswerRef, projectAssistantAnswer } from "@kontourai/thread";
+import { createObservedMessageIdentity, createThreadAnswerRef, projectAssistantAnswer } from "@kontourai/thread/answer";
 
 const observed = createObservedMessageIdentity("source-thread-42", "source-message-7");
 const ref = createThreadAnswerRef(observed);

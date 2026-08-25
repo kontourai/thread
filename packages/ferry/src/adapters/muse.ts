@@ -74,6 +74,7 @@ import type {
 } from "@kontourai/thread";
 import { THREAD_SCHEMA_VERSION } from "@kontourai/thread";
 import { asRecord, deterministicToolResultId, tryParseJson } from "./shared.js";
+import type { MessageIdentityObservationSink } from "../answer.js";
 
 const MuseEvent = z
   .object({
@@ -188,6 +189,7 @@ const FINISH_REASONS = new Set<FinishReason>([
 export interface MuseImportOptions {
   /** Called with a summary of dropped/undecodable records, if any. */
   onWarn?: (message: string) => void;
+  onMessageIdentity?: MessageIdentityObservationSink;
 }
 
 /**
@@ -246,6 +248,13 @@ export function importFromMuse(jsonContent: string, options: MuseImportOptions =
   const threadId = sourceSessionId ?? "muse-session";
 
   const messages: Message[] = [];
+  const observedMessages = new WeakSet<Message>();
+  const push = (message: Message, sourceMessageId: string | undefined): void => {
+    messages.push(message);
+    if (sourceSessionId !== undefined && sourceMessageId !== undefined && message.id === sourceMessageId) {
+      observedMessages.add(message);
+    }
+  };
   let syntheticId = 0;
   const nextId = (): string => `${threadId}:${++syntheticId}`;
   const usedIds = new Set<string>();
@@ -309,7 +318,7 @@ export function importFromMuse(jsonContent: string, options: MuseImportOptions =
       content: [],
     };
     openAssistants.set(responseId, message);
-    messages.push(message);
+    push(message, responseId);
     const pending = pendingCompletions.get(responseId);
     if (pending) {
       applyCompletion(message, pending);
@@ -397,13 +406,15 @@ export function importFromMuse(jsonContent: string, options: MuseImportOptions =
         // previous turn's response id instead of being disclosed as an orphan.
         openResponseId = undefined;
         if (typeof run.prompt === "string" && run.prompt.length > 0) {
-          messages.push({
-            id: uniqueId(envelope.id ?? nextId()),
+          const sourceMessageId = envelope.id;
+          const imported: Message = {
+            id: uniqueId(sourceMessageId ?? nextId()),
             threadId,
             role: "user",
             timestamp: at,
             content: [{ type: "text", text: run.prompt }],
-          });
+          };
+          push(imported, sourceMessageId);
         }
         break;
       }
@@ -481,13 +492,15 @@ export function importFromMuse(jsonContent: string, options: MuseImportOptions =
           });
         }
         if (toolResults.length > 0) {
-          messages.push({
-            id: uniqueId(envelope.id ?? nextId()),
+          const sourceMessageId = envelope.id;
+          const imported: Message = {
+            id: uniqueId(sourceMessageId ?? nextId()),
             threadId,
             role: "tool",
             timestamp: at,
             toolResults,
-          });
+          };
+          push(imported, sourceMessageId);
         }
         closeOpenAssistants();
         break;
@@ -588,7 +601,7 @@ export function importFromMuse(jsonContent: string, options: MuseImportOptions =
     ...(Object.keys(custom).length > 0 ? { custom } : {}),
   };
 
-  return {
+  const thread: Thread = {
     schemaVersion: THREAD_SCHEMA_VERSION,
     id: threadId,
     messages,
@@ -596,6 +609,11 @@ export function importFromMuse(jsonContent: string, options: MuseImportOptions =
     createdAt: firstTimestamp ?? messages[0]?.timestamp ?? Date.now(),
     updatedAt: lastTimestamp ?? messages[messages.length - 1]?.timestamp ?? Date.now(),
   };
+  for (const message of messages) options.onMessageIdentity?.(
+    message,
+    observedMessages.has(message) ? "observed" : "adapter-fallback",
+  );
+  return thread;
 }
 
 /**

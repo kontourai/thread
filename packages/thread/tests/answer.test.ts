@@ -5,6 +5,7 @@ import {
   MAX_SAFE_ASSISTANT_ANSWER_BYTES,
   MAX_SAFE_ASSISTANT_ANSWER_PARTS,
   MAX_SAFE_ASSISTANT_ANSWER_TEXT_BYTES,
+  MAX_SAFE_ASSISTANT_ANSWER_PART_TYPE_CODE_UNITS,
   SafeAssistantAnswerProjection,
   THREAD_ANSWER_REF_AUTHORITY,
   ThreadAnswerRef,
@@ -53,6 +54,18 @@ describe("ThreadAnswerRef", () => {
     expect(isThreadAnswerRef({ ...ref, unknown: "no" })).toBe(false);
     expect(isThreadAnswerRef({ ...ref, standing: "synthetic" })).toBe(false);
     expect(() => parseThreadAnswerRef({ ...ref, standing: "synthetic" })).toThrow();
+  });
+
+  it("is total and does not execute hostile ref getters or proxy gets", () => {
+    let getterCalls = 0;
+    const accessor = { ...ref, get threadId() { getterCalls += 1; throw new Error("must not run"); } };
+    const proxy = new Proxy({}, {
+      get() { getterCalls += 1; throw new Error("must not run"); },
+      getOwnPropertyDescriptor() { throw new Error("descriptor trap"); },
+    });
+    expect(isThreadAnswerRef(accessor)).toBe(false);
+    expect(isThreadAnswerRef(proxy)).toBe(false);
+    expect(getterCalls).toBe(0);
   });
 
   it("preserves opaque Unicode ID bytes without path or percent semantics", () => {
@@ -222,6 +235,7 @@ describe("projectAssistantAnswer", () => {
     expect(projectAssistantAnswer(ref, assistant([excluded], { metadata }))).toEqual({ state: "unavailable", reason: "no-safe-answer-text" });
     expect(projectAssistantAnswer(ref, assistant(new Array(257).fill({ type: "text", text: "x" })))).toEqual({ state: "unavailable", reason: "input-over-budget" });
     expect(projectAssistantAnswer(ref, assistant([{ type: "text", text: "x".repeat(256 * 1024 + 1) }]))).toEqual({ state: "unavailable", reason: "input-over-budget" });
+    expect(projectAssistantAnswer(ref, assistant([{ type: "x".repeat(MAX_SAFE_ASSISTANT_ANSWER_PART_TYPE_CODE_UNITS + 1), ignored: "x".repeat(8 * 1024 * 1024) }]))).toEqual({ state: "unavailable", reason: "corrupt-content" });
     expect(getterCalls).toBe(0);
   });
 });

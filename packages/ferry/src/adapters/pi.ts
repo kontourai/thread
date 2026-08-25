@@ -35,6 +35,7 @@ import type {
 } from "@kontourai/thread";
 import { THREAD_SCHEMA_VERSION } from "@kontourai/thread";
 import { asRecord, deterministicToolResultId, parseTimestamp, toLines, type JsonlInput } from "./shared.js";
+import type { MessageIdentityObservationSink } from "../answer.js";
 
 const PiLine = z
   .object({
@@ -59,6 +60,7 @@ const STOP_REASON_MAP: Record<string, FinishReason> = {
 export interface PiImportOptions {
   /** Called with a summary of skipped/unparseable records, if any. */
   onWarn?: (message: string) => void;
+  onMessageIdentity?: MessageIdentityObservationSink;
 }
 
 function userContent(content: unknown): ContentPart[] {
@@ -87,6 +89,11 @@ export function importFromPi(jsonlContent: JsonlInput, options: PiImportOptions 
   let version: string | undefined;
   let skippedLines = 0;
   const messages: Message[] = [];
+  const observedMessages = new WeakSet<Message>();
+  const push = (message: Message, messageIdWasObserved: boolean): void => {
+    messages.push(message);
+    if (messageIdWasObserved) observedMessages.add(message);
+  };
   let syntheticId = 0;
   const threadIdRef = (): string => sessionId ?? "pi-session";
   const nextId = (): string => `${threadIdRef()}:${++syntheticId}`;
@@ -130,13 +137,13 @@ export function importFromPi(jsonlContent: JsonlInput, options: PiImportOptions 
     if (role === "user") {
       const content = userContent(message["content"]);
       if (content.length === 0) continue;
-      messages.push({
+      push({
         id: record.id ?? nextId(),
         threadId: threadIdRef(),
         role: "user",
         timestamp,
         content,
-      });
+      }, record.id !== undefined);
     } else if (role === "assistant") {
       const content: AssistantContent[] = [];
       const rawContent = Array.isArray(message["content"]) ? message["content"] : [];
@@ -186,7 +193,7 @@ export function importFromPi(jsonlContent: JsonlInput, options: PiImportOptions 
         typeof value === "number" && Number.isFinite(value) && value >= 0
           ? Math.round(value)
           : undefined;
-      messages.push({
+      push({
         id: record.id ?? nextId(),
         threadId: threadIdRef(),
         role: "assistant",
@@ -205,7 +212,7 @@ export function importFromPi(jsonlContent: JsonlInput, options: PiImportOptions 
             : undefined,
         finishReason: stopReason !== undefined ? STOP_REASON_MAP[stopReason] : undefined,
         ...(errorMessage !== undefined ? { metadata: { errorMessage } } : {}),
-      });
+      }, record.id !== undefined);
     } else if (role === "toolResult") {
       if (typeof message["toolCallId"] !== "string") continue;
       const text = Array.isArray(message["content"])
@@ -218,7 +225,7 @@ export function importFromPi(jsonlContent: JsonlInput, options: PiImportOptions 
             .filter((t) => t.length > 0)
             .join("\n")
         : "";
-      messages.push({
+      push({
         id: record.id ?? nextId(),
         threadId: threadIdRef(),
         role: "tool",
@@ -245,7 +252,7 @@ export function importFromPi(jsonlContent: JsonlInput, options: PiImportOptions 
                 }),
           },
         ],
-      });
+      }, record.id !== undefined);
     }
   }
 
@@ -265,7 +272,7 @@ export function importFromPi(jsonlContent: JsonlInput, options: PiImportOptions 
     cwd,
   };
 
-  return {
+  const thread: Thread = {
     schemaVersion: THREAD_SCHEMA_VERSION,
     id: threadIdRef(),
     messages,
@@ -273,4 +280,11 @@ export function importFromPi(jsonlContent: JsonlInput, options: PiImportOptions 
     createdAt: messages[0]?.timestamp ?? Date.now(),
     updatedAt: messages[messages.length - 1]?.timestamp ?? Date.now(),
   };
+  // Messages can be rebased when a session header arrives late; do not infer
+  // an observed tuple from its final string representation.
+  for (const message of messages) options.onMessageIdentity?.(
+    message,
+    sessionId !== undefined && observedMessages.has(message) ? "observed" : "adapter-fallback",
+  );
+  return thread;
 }

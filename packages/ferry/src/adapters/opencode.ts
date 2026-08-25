@@ -29,6 +29,7 @@ import type {
 } from "@kontourai/thread";
 import { THREAD_SCHEMA_VERSION } from "@kontourai/thread";
 import { asRecord, deterministicToolResultId, parseTimestamp } from "./shared.js";
+import type { MessageIdentityObservationSink } from "../answer.js";
 
 const OpenCodeExport = z
   .object({
@@ -79,7 +80,11 @@ const OpenCodeExport = z
   })
   .passthrough();
 
-export function importFromOpenCode(jsonContent: string): Thread {
+export interface OpenCodeImportOptions {
+  onMessageIdentity?: MessageIdentityObservationSink;
+}
+
+export function importFromOpenCode(jsonContent: string, options: OpenCodeImportOptions = {}): Thread {
   const parsed = OpenCodeExport.safeParse(JSON.parse(jsonContent));
   if (!parsed.success) {
     throw new Error(`Not an OpenCode session export: ${parsed.error.issues[0]?.message ?? "invalid shape"}`);
@@ -87,6 +92,7 @@ export function importFromOpenCode(jsonContent: string): Thread {
   const session = parsed.data;
   const threadId = session.info?.id ?? "opencode-session";
   const messages: Message[] = [];
+  const observedMessages = new WeakSet<Message>();
   let syntheticId = 0;
   const nextId = (): string => `${threadId}:${++syntheticId}`;
 
@@ -112,7 +118,9 @@ export function importFromOpenCode(jsonContent: string): Thread {
         }
       }
       if (content.length > 0) {
-        messages.push({ id: info.id ?? nextId(), threadId, role: "user", timestamp, content });
+        const imported: Message = { id: info.id ?? nextId(), threadId, role: "user", timestamp, content };
+        messages.push(imported);
+        if (session.info?.id !== undefined && info.id !== undefined) observedMessages.add(imported);
       }
       continue;
     }
@@ -189,7 +197,7 @@ export function importFromOpenCode(jsonContent: string): Thread {
 
     if (content.length > 0) {
       const tokens = info.tokens;
-      messages.push({
+      const imported: Message = {
         id: info.id ?? nextId(),
         threadId,
         role: "assistant",
@@ -216,7 +224,9 @@ export function importFromOpenCode(jsonContent: string): Thread {
                     : undefined,
               }
             : undefined,
-      });
+      };
+      messages.push(imported);
+      if (session.info?.id !== undefined && info.id !== undefined) observedMessages.add(imported);
     }
     if (toolResults.length > 0) {
       messages.push({
@@ -240,7 +250,7 @@ export function importFromOpenCode(jsonContent: string): Thread {
     title: session.info?.title,
   };
 
-  return {
+  const thread: Thread = {
     schemaVersion: THREAD_SCHEMA_VERSION,
     id: threadId,
     messages,
@@ -252,4 +262,9 @@ export function importFromOpenCode(jsonContent: string): Thread {
       messages[messages.length - 1]?.timestamp ??
       Date.now(),
   };
+  for (const message of messages) options.onMessageIdentity?.(
+    message,
+    observedMessages.has(message) ? "observed" : "adapter-fallback",
+  );
+  return thread;
 }

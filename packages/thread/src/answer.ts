@@ -100,9 +100,29 @@ export const createThreadAnswerRef = (
 /** Parses the closed wire shape, including its authority and schema version. */
 export const parseThreadAnswerRef = (value: unknown): ThreadAnswerRef => ThreadAnswerRef.parse(value);
 
-/** Non-throwing validation for untrusted wire input. */
-export const isThreadAnswerRef = (value: unknown): value is ThreadAnswerRef =>
-  ThreadAnswerRef.safeParse(value).success;
+/**
+ * Non-throwing validation for untrusted wire input.  Do not hand an arbitrary
+ * proxy to Zod here: schema parsing reads properties and so can execute a
+ * hostile getter.  Answer refs are deliberately tiny, so validate their own
+ * data descriptors before giving the closed value to the schema.
+ */
+export const isThreadAnswerRef = (value: unknown): value is ThreadAnswerRef => {
+  const record = ownSafeRecord(value);
+  if (!record) return false;
+  const fields = ["authority", "schemaVersion", "kind", "standing", "threadId", "messageId"] as const;
+  if (Object.keys(record).length !== fields.length || !fields.every((field) => Object.hasOwn(record, field))) return false;
+  const candidate: Record<string, unknown> = {};
+  for (const field of fields) {
+    const result = ownDataField(record, field);
+    if (result.state !== "value") return false;
+    candidate[field] = result.value;
+  }
+  try {
+    return ThreadAnswerRef.safeParse(candidate).success;
+  } catch {
+    return false;
+  }
+};
 
 /**
  * Collision-free, deterministic identity key.  Tuple encoding keeps equal
@@ -135,6 +155,8 @@ export const MAX_SAFE_ASSISTANT_ANSWER_BYTES = 72 * 1024;
 export const MAX_SAFE_ASSISTANT_ANSWER_INPUT_PARTS = 256;
 export const MAX_SAFE_ASSISTANT_ANSWER_SOURCE_TEXT_CODE_UNITS = 256 * 1024;
 export const MAX_SAFE_ASSISTANT_ANSWER_SOURCE_TEXT_BYTES = 512 * 1024;
+/** Bound the discriminator before comparing attacker-controlled type text. */
+export const MAX_SAFE_ASSISTANT_ANSWER_PART_TYPE_CODE_UNITS = 64;
 
 const isWellFormedUnicode = (value: string): boolean => {
   for (let index = 0; index < value.length; index += 1) {
@@ -254,6 +276,18 @@ type DataFieldResult =
   | { state: "missing" }
   | { state: "unsafe" };
 
+/** A record check which cannot invoke inherited or accessor properties. */
+const ownSafeRecord = (value: unknown): object | undefined => {
+  if ((typeof value !== "object" && typeof value !== "function") || value === null) return undefined;
+  try {
+    // Proxy traps are allowed to fail closed, but no `get` operation occurs.
+    Object.getOwnPropertyNames(value);
+    return value;
+  } catch {
+    return undefined;
+  }
+};
+
 /** Reads only one own data property, never invoking an inherited accessor. */
 const ownDataField = (value: unknown, key: string): DataFieldResult => {
   if ((typeof value !== "object" && typeof value !== "function") || value === null) {
@@ -344,6 +378,9 @@ export const projectAssistantAnswer = (
     if (type.state !== "value") return { state: "unavailable", reason: "corrupt-content" };
     // Excluded content is deliberately not traversed. In particular no
     // reasoning/tool/image/metadata field is read after this discriminator.
+    if (typeof type.value !== "string" || type.value.length > MAX_SAFE_ASSISTANT_ANSWER_PART_TYPE_CODE_UNITS) {
+      return { state: "unavailable", reason: "corrupt-content" };
+    }
     if (type.value !== "text") continue;
     const text = ownDataField(part.value, "text");
     if (text.state !== "value" || typeof text.value !== "string") {

@@ -73,6 +73,7 @@ import type {
 } from "@kontourai/thread";
 import { THREAD_SCHEMA_VERSION } from "@kontourai/thread";
 import { asRecord, deterministicToolResultId, parseTimestamp, toLines, tryParseJson, type JsonlInput } from "./shared.js";
+import type { MessageIdentityObservationSink } from "../answer.js";
 
 const RolloutLine = z
   .object({
@@ -89,6 +90,7 @@ const RolloutLine = z
 export interface CodexImportOptions {
   /** Called with a summary of skipped/unparseable records, if any. */
   onWarn?: (message: string) => void;
+  onMessageIdentity?: MessageIdentityObservationSink;
 }
 
 interface CodexReducerState {
@@ -526,7 +528,11 @@ export function importFromCodex(
   const importer = createCodexImporter(options);
   importer.pushLines(toLines(jsonlContent));
   importer.finalize();
-  return importer.thread();
+  const thread = importer.thread();
+  // Codex folds source records into generated canonical messages. A source
+  // payload id is not the emitted message tuple.
+  for (const message of thread.messages) options.onMessageIdentity?.(message, "adapter-fallback");
+  return thread;
 }
 
 interface ExtractedTokenUsage {
