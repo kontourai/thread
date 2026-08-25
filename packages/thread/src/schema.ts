@@ -607,10 +607,26 @@ const ProjectedLabel = WellFormedUnicode.refine(
   hasUtf8BytesAtMost(MAX_PROJECTED_TOOL_RESULT_LABEL_BYTES),
   { message: `must be at most ${MAX_PROJECTED_TOOL_RESULT_LABEL_BYTES} UTF-8 bytes` },
 );
-const ProjectedMediaType = WellFormedUnicode.refine(
+const isSafeFileLabel = (value: string): boolean =>
+  value.length > 0 &&
+  !/[\\/\u0000-\u001F\u007F]/u.test(value) &&
+  value !== "." &&
+  value !== ".." &&
+  !/^[A-Za-z]:/u.test(value);
+const isSafeMediaType = (value: string): boolean => {
+  if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+\/[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/u.test(value)) {
+    return false;
+  }
+  const primaryType = value.slice(0, value.indexOf("/")).toLowerCase();
+  return !["data", "file", "http", "https"].includes(primaryType);
+};
+const SafeFileLabel = ProjectedLabel.refine(isSafeFileLabel, {
+  message: "must be a neutral file label, not a path or control-bearing name",
+});
+const SafeMediaType = WellFormedUnicode.refine(
   hasUtf8BytesAtMost(MAX_PROJECTED_TOOL_RESULT_MEDIA_TYPE_BYTES),
   { message: `must be at most ${MAX_PROJECTED_TOOL_RESULT_MEDIA_TYPE_BYTES} UTF-8 bytes` },
-);
+).refine(isSafeMediaType, { message: "must be a type/subtype MIME token" });
 const ProjectedMetadataScalar = WellFormedUnicode.refine(
   hasUtf8BytesAtMost(MAX_PROJECTED_TOOL_RESULT_METADATA_FIELD_BYTES),
   { message: `must be at most ${MAX_PROJECTED_TOOL_RESULT_METADATA_FIELD_BYTES} UTF-8 bytes` },
@@ -618,11 +634,11 @@ const ProjectedMetadataScalar = WellFormedUnicode.refine(
 
 export const SafeToolResultPart = z.discriminatedUnion("type", [
   z.object({ type: z.literal("text"), text: WellFormedUnicode }),
-  z.object({ type: z.literal("image"), mediaType: ProjectedMediaType }),
+  z.object({ type: z.literal("image"), mediaType: SafeMediaType }),
   z.object({
     type: z.literal("file"),
-    name: ProjectedLabel,
-    mediaType: ProjectedMediaType,
+    name: SafeFileLabel,
+    mediaType: SafeMediaType,
     size: z.number().int().nonnegative().optional(),
   }),
 ]);
@@ -759,18 +775,18 @@ const safeLabel = (value: string, fallback: string): { value: string; omittedByt
 };
 
 const safeMediaType = (mediaType: string): { value: string; omittedBytes: number } => {
+  if (!isSafeMediaType(mediaType)) {
+    return { value: "application/octet-stream", omittedBytes: utf8ByteLength(mediaType) };
+  }
   const truncated = truncateUtf8(mediaType, MAX_PROJECTED_TOOL_RESULT_MEDIA_TYPE_BYTES);
+  if (!isSafeMediaType(truncated.value)) {
+    return { value: "application/octet-stream", omittedBytes: utf8ByteLength(mediaType) };
+  }
   return { value: truncated.value, omittedBytes: truncated.omittedBytes };
 };
 
 const safeFileName = (name: string): { value: string; omittedBytes: number } => {
-  // Paths, traversal markers, and control characters are not portable names.
-  if (
-    name.length === 0 ||
-    name === "." ||
-    name === ".." ||
-    /[\\/\u0000-\u001F\u007F]/u.test(name)
-  ) {
+  if (!isSafeFileLabel(name)) {
     return { value: "file", omittedBytes: utf8ByteLength(name) };
   }
   return safeLabel(name, "file");
@@ -809,7 +825,6 @@ const projectCorrelations = (
   for (const correlation of correlations) {
     const namespace = safeMetadataScalar(correlation.namespace);
     const id = safeMetadataScalar(correlation.id);
-    omittedBytes += namespace.omittedBytes + id.omittedBytes;
     const projected = { namespace: namespace.value, kind: correlation.kind, id: id.value };
     const key = JSON.stringify([projected.namespace, projected.kind, projected.id]);
     if (seen.has(key)) {
@@ -820,6 +835,7 @@ const projectCorrelations = (
       continue;
     }
     seen.add(key);
+    omittedBytes += namespace.omittedBytes + id.omittedBytes;
     value.push(projected);
   }
   return { value, omittedBytes };

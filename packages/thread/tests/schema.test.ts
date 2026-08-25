@@ -339,9 +339,42 @@ describe("tool result identity", () => {
     expect(media).toEqual({
       state: "available",
       result: expect.objectContaining({
-        content: [{ type: "image", mediaType: "m".repeat(256) }],
+        content: [{ type: "image", mediaType: "application/octet-stream" }],
         truncated: true,
-        omittedMetadataBytes: 69_744,
+        omittedMetadataBytes: 70_000,
+      }),
+    });
+
+    const unsafeFile = projectToolResult(
+      ToolResult.parse({
+        ...identified("success"),
+        content: [
+          { type: "file", name: "../secret", mediaType: "file:///secret", data: "private" },
+        ],
+      }),
+    );
+    expect(unsafeFile).toEqual({
+      state: "available",
+      result: expect.objectContaining({
+        content: [{ type: "file", name: "file", mediaType: "application/octet-stream" }],
+        truncated: true,
+        omittedMetadataBytes: "../secret".length + "file:///secret".length,
+      }),
+    });
+
+    const longMime = `application/${"x".repeat(300)}`;
+    const truncatedMime = projectToolResult(
+      ToolResult.parse({
+        ...identified("success"),
+        content: [{ type: "image", data: "private", mediaType: longMime }],
+      }),
+    );
+    expect(truncatedMime).toEqual({
+      state: "available",
+      result: expect.objectContaining({
+        content: [{ type: "image", mediaType: longMime.slice(0, 256) }],
+        omittedMetadataBytes: longMime.length - 256,
+        truncated: true,
       }),
     });
   });
@@ -395,6 +428,55 @@ describe("tool result identity", () => {
         correlations: [{ namespace: "source", kind: "event", id: "i".repeat(257) }],
       }),
     ).toThrow();
+    expect(
+      SafeToolResultProjection.parse({
+        ...safe,
+        content: [{ type: "image", mediaType: "application/vnd.api+json" }],
+      }),
+    ).toEqual({ ...safe, content: [{ type: "image", mediaType: "application/vnd.api+json" }] });
+    for (const name of ["../secret", "/absolute", "C:\\windows", "bad\u0000name", ".", ".."]) {
+      expect(() =>
+        SafeToolResultProjection.parse({
+          ...safe,
+          content: [{ type: "file", name, mediaType: "text/plain" }],
+        }),
+      ).toThrow();
+    }
+    for (const mediaType of [
+      "file:///secret",
+      "https://example.test/x",
+      "data:text/plain,secret",
+      "file/plain",
+      "http/plain",
+      "data/plain",
+    ]) {
+      expect(() =>
+        SafeToolResultProjection.parse({
+          ...safe,
+          content: [{ type: "image", mediaType }],
+        }),
+      ).toThrow();
+    }
+  });
+
+  it("counts a truncated correlation collision as one dropped source tuple", () => {
+    const projected = projectToolResult(
+      ToolResult.parse({
+        ...identified("unknown"),
+        correlations: [
+          { namespace: "n".repeat(256), kind: "event", id: "id" },
+          { namespace: `${"n".repeat(256)}x`, kind: "event", id: "id" },
+        ],
+      }),
+    );
+    expect(projected).toEqual({
+      state: "available",
+      result: expect.objectContaining({
+        correlations: [{ namespace: "n".repeat(256), kind: "event", id: "id" }],
+        omittedMetadataBytes: 264,
+        truncated: true,
+      }),
+    });
   });
 
   it("enforces a total safe-projection payload budget independent of text", () => {
