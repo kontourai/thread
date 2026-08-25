@@ -27,6 +27,7 @@ import type {
 } from "@kontourai/thread";
 import { THREAD_SCHEMA_VERSION } from "@kontourai/thread";
 import { asRecord } from "./shared.js";
+import type { MessageIdentityObservationSink } from "../answer.js";
 
 // Field-level .catch() keeps one malformed node from silently deleting the
 // whole conversation: a bad message degrades to null, bad links degrade to
@@ -132,6 +133,7 @@ export interface ChatGPTImportOptions {
    * branches. Not called when nothing was lost.
    */
   onWarn?: (message: string) => void;
+  onMessageIdentity?: MessageIdentityObservationSink;
 }
 
 export function importFromChatGPTExport(
@@ -232,7 +234,7 @@ export function importFromChatGPTExport(
         ? { custom: { chatgptAbandonedBranchMessages: conversationAbandonedBranchMessages } }
         : {}),
     };
-    threads.push({
+    const thread: Thread = {
       schemaVersion: THREAD_SCHEMA_VERSION,
       id: threadId,
       messages,
@@ -245,7 +247,14 @@ export function importFromChatGPTExport(
         typeof conversation.update_time === "number" && conversation.update_time > 0
           ? Math.round(conversation.update_time * 1000)
           : (messages[messages.length - 1]?.timestamp ?? Date.now()),
-    });
+    };
+    threads.push(thread);
+    // Both ids are copied directly from this conversation's export record;
+    // no post-conversion spelling or correlation inference is involved.
+    const tupleWasObserved = conversation.id !== undefined || conversation.conversation_id !== undefined;
+    for (const message of messages) {
+      options.onMessageIdentity?.(message, tupleWasObserved ? "observed" : "adapter-fallback");
+    }
   }
 
   if (skippedConversations > 0) {

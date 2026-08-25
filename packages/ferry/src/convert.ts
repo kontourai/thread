@@ -4,6 +4,12 @@
 
 import type { Thread } from "@kontourai/thread";
 import { threadFromJson, threadToJson } from "@kontourai/thread";
+import type { MessageIdentityObservation } from "@kontourai/thread/answer";
+import {
+  ferryMessageIdentityObservationFromStanding,
+  normalizeMessageIdentityObservations,
+  type MessageIdentityObservationSink,
+} from "./answer.js";
 import { importFromChatGPTExport } from "./adapters/chatgpt-export.js";
 import { importFromClaudeCode } from "./adapters/claude-code.js";
 import { importFromCodex } from "./adapters/codex.js";
@@ -47,30 +53,58 @@ export interface ImportOptions {
   sessionId?: string;
 }
 
+/** Additive import result for consumers that need durable answer-ref standing. */
+export interface ImportResult {
+  threads: Thread[];
+  messageIdentityObservations: MessageIdentityObservation[];
+}
+
 export function importThreads(
   content: string | readonly string[],
   format: InputFormat,
   options: ImportOptions = {},
 ): Thread[] {
+  return importThreadsWithIdentityObservations(content, format, options).threads;
+}
+
+/**
+ * Imports the usual Thread values plus serializable identity observations.
+ * `importThreads` remains the compatibility API.  Observation collection is
+ * callback-based so adapters declare standing at source-read time; it never
+ * guesses from a converted ID's spelling.
+ */
+export function importThreadsWithIdentityObservations(
+  content: string | readonly string[],
+  format: InputFormat,
+  options: ImportOptions = {},
+): ImportResult {
   const { onWarn } = options;
+  const raw: MessageIdentityObservation[] = [];
+  const onMessageIdentity: MessageIdentityObservationSink = (message, standing) => {
+    raw.push(ferryMessageIdentityObservationFromStanding(message, standing));
+  };
+  let threads: Thread[];
   switch (format) {
     case "claude-code":
-      return [importFromClaudeCode(content, { onWarn })];
+      threads = [importFromClaudeCode(content, { onWarn, onMessageIdentity })]; break;
     case "codex":
-      return [importFromCodex(content, { onWarn })];
+      threads = [importFromCodex(content, { onWarn, onMessageIdentity })]; break;
     case "opencode":
-      return [importFromOpenCode(requireString(content, format))];
+      threads = [importFromOpenCode(requireString(content, format), { onMessageIdentity })]; break;
     case "kiro":
-      return [importFromKiro(content, { onWarn, sessionId: options.sessionId })];
+      threads = [importFromKiro(content, { onWarn, sessionId: options.sessionId, onMessageIdentity })]; break;
     case "pi":
-      return [importFromPi(content, { onWarn })];
+      threads = [importFromPi(content, { onWarn, onMessageIdentity })]; break;
     case "muse":
-      return [importFromMuse(requireString(content, format), { onWarn })];
+      threads = [importFromMuse(requireString(content, format), { onWarn, onMessageIdentity })]; break;
     case "chatgpt-export":
-      return importFromChatGPTExport(requireString(content, format), { onWarn });
+      threads = importFromChatGPTExport(requireString(content, format), { onWarn, onMessageIdentity }); break;
     case "thread":
-      return [threadFromJson(requireString(content, format))];
+      threads = [threadFromJson(requireString(content, format))];
+      for (const thread of threads) for (const message of thread.messages) onMessageIdentity(message, "adapter-fallback");
+      break;
   }
+  return { threads, messageIdentityObservations: normalizeMessageIdentityObservations(raw) };
 }
 
 function requireString(content: string | readonly string[], format: InputFormat): string {

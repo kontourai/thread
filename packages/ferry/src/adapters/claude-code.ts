@@ -48,6 +48,7 @@ import type {
 } from "@kontourai/thread";
 import { FinishReason, THREAD_SCHEMA_VERSION } from "@kontourai/thread";
 import { deterministicToolResultId, parseTimestamp, toLines, type JsonlInput } from "./shared.js";
+import type { MessageIdentityObservationSink } from "../answer.js";
 
 const ConversationEvent = z
   .object({
@@ -115,6 +116,7 @@ export interface ClaudeCodeImportOptions {
   includeSidechains?: boolean;
   /** Called with a summary of skipped/unparseable records, if any. */
   onWarn?: (message: string) => void;
+  onMessageIdentity?: MessageIdentityObservationSink;
 }
 
 function imagePartFromSource(source: unknown): ImagePart | null {
@@ -174,7 +176,18 @@ interface ClaudeReducerState {
    * record because the incremental importer serializes this state as JSON.
    */
   pendingToolNames?: Record<string, string>;
+  /** Indices whose exact message ids were read from source records. */
+  observedMessageIndices?: number[];
 }
+
+const pushClaudeMessage = (
+  state: ClaudeReducerState,
+  message: Message,
+  messageIdWasObserved: boolean,
+): void => {
+  state.messages.push(message);
+  if (messageIdWasObserved) (state.observedMessageIndices ??= []).push(state.messages.length - 1);
+};
 
 function claudeThread(state: ClaudeReducerState): Thread {
   if (state.eventCount === 0) throw new Error("No Claude Code conversation events found in input");
@@ -252,18 +265,18 @@ function stepClaude(event: ConversationEvent, state: ClaudeReducerState, recordO
         }
       }
       if (toolResults.length > 0) {
-        messages.push({
+        pushClaudeMessage(state, {
           id: event.uuid ?? nextId(),
           threadId,
           role: "tool",
           timestamp,
           toolResults,
           ...(event.isSidechain ? { metadata: { sidechain: true } } : {}),
-        });
+        }, event.uuid !== undefined);
       }
       const content = contentPartsFromBlocks(apiMessage.content);
       if (content.length > 0) {
-        messages.push({
+        pushClaudeMessage(state, {
           // A user event holding only tool_results consumed the uuid above;
           // mixed events get a synthetic id for the text half.
           id: toolResults.length > 0 ? nextId() : (event.uuid ?? nextId()),
@@ -272,7 +285,7 @@ function stepClaude(event: ConversationEvent, state: ClaudeReducerState, recordO
           timestamp,
           content,
           ...(event.isSidechain ? { metadata: { sidechain: true } } : {}),
-        });
+        }, toolResults.length === 0 && event.uuid !== undefined);
       }
       return;
     }
@@ -392,7 +405,7 @@ function stepClaude(event: ConversationEvent, state: ClaudeReducerState, recordO
       }
       existing.finishReason = assistantMessage.finishReason ?? existing.finishReason;
     } else {
-      messages.push(assistantMessage);
+      pushClaudeMessage(state, assistantMessage, apiMessage.id !== undefined || event.uuid !== undefined);
       if (mergeKey !== undefined) state.assistantById[mergeKey] = messages.length - 1;
     }
 }
@@ -490,7 +503,14 @@ export function importFromClaudeCode(
   const importer = createClaudeCodeImporter(options);
   importer.pushLines(toLines(jsonlContent));
   importer.finalize();
-  return importer.thread();
+  const thread = importer.thread();
+  const observed = new Set(importer.state().observedMessageIndices ?? []);
+  const sourceThreadWasObserved = importer.state().sessionId !== undefined;
+  for (const [index, message] of thread.messages.entries()) options.onMessageIdentity?.(
+    message,
+    sourceThreadWasObserved && observed.has(index) ? "observed" : "adapter-fallback",
+  );
+  return thread;
 }
 
 function assistantUsageExtras(

@@ -8,6 +8,10 @@
     ".": {
       "types": "./dist/src/index.d.ts",
       "default": "./dist/src/index.js"
+    },
+    "./answer": {
+      "types": "./dist/src/answer.d.ts",
+      "default": "./dist/src/answer.js"
     }
   },
   "files": [
@@ -18,8 +22,9 @@
   "scripts": {
     "build": "rm -rf dist && tsc",
     "typecheck": "tsc -p tsconfig.typecheck.json",
-    "test": "npm run build && vitest run && npm run test:pack",
-    "test:pack": "node tests/pack-smoke.mjs"
+    "test": "npm run build && vitest run && npm run test:pack && npm run test:tree-shaking",
+    "test:pack": "node tests/pack-smoke.mjs",
+    "test:tree-shaking": "node tests/tree-shaking-smoke.mjs"
   },
   "keywords": [
     "ai",
@@ -41,6 +46,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "esbuild": "^0.27.4",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
   },
