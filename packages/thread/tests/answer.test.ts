@@ -7,16 +7,18 @@ import {
   MAX_SAFE_ASSISTANT_ANSWER_TEXT_BYTES,
   SafeAssistantAnswerProjection,
   THREAD_ANSWER_REF_AUTHORITY,
-  THREAD_SCHEMA_VERSION,
   ThreadAnswerRef,
+  createObservedMessageIdentity,
   createThreadAnswerRef,
   isThreadAnswerRef,
   parseThreadAnswerRef,
   projectAssistantAnswer,
   threadAnswerRefKey,
-} from "../src/index.js";
+} from "../src/answer.js";
+import { THREAD_SCHEMA_VERSION } from "../src/schema.js";
 
-const ref = createThreadAnswerRef("thread-1", "message-1");
+const observed = createObservedMessageIdentity("thread-1", "message-1");
+const ref = createThreadAnswerRef(observed);
 const assistant = (content: unknown[], overrides: Record<string, unknown> = {}) => ({
   id: "message-1",
   threadId: "thread-1",
@@ -32,11 +34,12 @@ describe("ThreadAnswerRef", () => {
       authority: "@kontourai/thread",
       schemaVersion: THREAD_SCHEMA_VERSION,
       kind: "assistant-message",
+      standing: "observed",
       threadId: "thread-1",
       messageId: "message-1",
     });
     expect(THREAD_ANSWER_REF_AUTHORITY).toBe("@kontourai/thread");
-    expect(threadAnswerRefKey(ref)).not.toBe(threadAnswerRefKey(createThreadAnswerRef("thread-2", "message-1")));
+    expect(threadAnswerRefKey(ref)).not.toBe(threadAnswerRefKey(createThreadAnswerRef(createObservedMessageIdentity("thread-2", "message-1"))));
     expect(parseThreadAnswerRef(ref)).toEqual(ref);
     expect(isThreadAnswerRef(ref)).toBe(true);
   });
@@ -44,10 +47,20 @@ describe("ThreadAnswerRef", () => {
   it("rejects unknown keys, incorrect versions, blank or oversized IDs, and malformed Unicode", () => {
     expect(() => ThreadAnswerRef.parse({ ...ref, extra: true })).toThrow();
     expect(() => ThreadAnswerRef.parse({ ...ref, schemaVersion: "1.2.1" })).toThrow();
-    expect(() => createThreadAnswerRef("", "message")).toThrow();
-    expect(() => createThreadAnswerRef("thread", "x".repeat(4097))).toThrow();
-    expect(() => createThreadAnswerRef("\ud800", "message")).toThrow();
+    expect(() => createObservedMessageIdentity("", "message")).toThrow();
+    expect(() => createObservedMessageIdentity("thread", "x".repeat(4097))).toThrow();
+    expect(() => createObservedMessageIdentity("\ud800", "message")).toThrow();
     expect(isThreadAnswerRef({ ...ref, unknown: "no" })).toBe(false);
+    expect(isThreadAnswerRef({ ...ref, standing: "synthetic" })).toBe(false);
+    expect(() => parseThreadAnswerRef({ ...ref, standing: "synthetic" })).toThrow();
+  });
+
+  it("preserves opaque Unicode ID bytes without path or percent semantics", () => {
+    const lower = createThreadAnswerRef(createObservedMessageIdentity("https://source/%2f", "a/../b%2f"));
+    const upper = createThreadAnswerRef(createObservedMessageIdentity("https://source/%2F", "a/../b%2F"));
+    expect(lower.threadId).toBe("https://source/%2f");
+    expect(lower.messageId).toBe("a/../b%2f");
+    expect(threadAnswerRefKey(lower)).not.toBe(threadAnswerRefKey(upper));
   });
 });
 
@@ -180,5 +193,35 @@ describe("projectAssistantAnswer", () => {
     expect(() => SafeAssistantAnswerProjection.parse({ ...safe, content: [{ type: "text", text: "x".repeat(16 * 1024 + 1) }] })).toThrow();
     expect(() => SafeAssistantAnswerProjection.parse({ ...safe, content: [{ type: "text", text: "x".repeat(MAX_SAFE_ASSISTANT_ANSWER_TEXT_BYTES + 1) }] })).toThrow();
     expect(MAX_SAFE_ASSISTANT_ANSWER_BYTES).toBeGreaterThan(MAX_SAFE_ASSISTANT_ANSWER_TEXT_BYTES);
+  });
+
+  it("is total and projection-bounded for hostile reflective inputs", () => {
+    let getterCalls = 0;
+    const rootAccessor = {
+      get id() { getterCalls += 1; throw new Error("must not run"); },
+      threadId: "thread-1", role: "assistant", content: [],
+    };
+    const rootProxy = new Proxy({}, { getOwnPropertyDescriptor() { throw new Error("must not run"); } });
+    const partProxy = new Proxy({}, { getOwnPropertyDescriptor() { throw new Error("must not run"); } });
+    const excluded = {
+      type: "tool_call",
+      toolCall: {
+        get arguments() { getterCalls += 1; throw new Error("must not run"); },
+        raw: "x".repeat(8 * 1024 * 1024),
+        huge: new Array(1_000_000).fill({ nested: "ignored" }),
+      },
+    };
+    const metadata = {
+      raw: "x".repeat(8 * 1024 * 1024),
+      get private() { getterCalls += 1; throw new Error("must not run"); },
+    };
+
+    expect(projectAssistantAnswer(ref, rootAccessor)).toEqual({ state: "unavailable", reason: "invalid-message" });
+    expect(projectAssistantAnswer(ref, rootProxy)).toEqual({ state: "unavailable", reason: "invalid-message" });
+    expect(projectAssistantAnswer(ref, assistant([partProxy]))).toEqual({ state: "unavailable", reason: "corrupt-content" });
+    expect(projectAssistantAnswer(ref, assistant([excluded], { metadata }))).toEqual({ state: "unavailable", reason: "no-safe-answer-text" });
+    expect(projectAssistantAnswer(ref, assistant(new Array(257).fill({ type: "text", text: "x" })))).toEqual({ state: "unavailable", reason: "input-over-budget" });
+    expect(projectAssistantAnswer(ref, assistant([{ type: "text", text: "x".repeat(256 * 1024 + 1) }]))).toEqual({ state: "unavailable", reason: "input-over-budget" });
+    expect(getterCalls).toBe(0);
   });
 });

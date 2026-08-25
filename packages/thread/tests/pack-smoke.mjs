@@ -27,14 +27,15 @@ try {
   });
   writeFileSync(
     join(consumerDirectory, "smoke.mjs"),
-    `import { THREAD_SCHEMA_VERSION, ToolResult, createToolResult, isIdentifiedToolResult, projectToolResult, SafeToolResultProjection, createThreadAnswerRef, projectAssistantAnswer } from "@kontourai/thread";
+    `import { THREAD_SCHEMA_VERSION, ToolResult, createToolResult, isIdentifiedToolResult, projectToolResult, SafeToolResultProjection } from "@kontourai/thread";
+import { createObservedMessageIdentity, createThreadAnswerRef, projectAssistantAnswer } from "@kontourai/thread/answer";
 const authorityDecision = { decision: "denied", authority: "policy", policyId: "policy-1" };
 const correlations = [{ namespace: "source", kind: "event", id: "event-1" }];
 const result = createToolResult({ toolCallId: "call", name: "tool", content: [], resultId: "result", terminalStatus: "error", isError: true, authorityDecision, correlations });
 if (!isIdentifiedToolResult(result) || ToolResult.parse(result).resultId !== "result") process.exit(1);
 const safe = SafeToolResultProjection.parse({ resultId: "result", name: "tool", terminalStatus: "error", authorityDecision, correlations, content: [], truncated: false, omittedParts: 0, omittedTextBytes: 0, omittedMetadataBytes: 0 });
 const outcome = projectToolResult(result);
-const answerRef = createThreadAnswerRef("thread", "message");
+const answerRef = createThreadAnswerRef(createObservedMessageIdentity("thread", "message"));
 const answer = projectAssistantAnswer(answerRef, { id: "message", threadId: "thread", role: "assistant", timestamp: 1, content: [{ type: "text", text: "answer" }] });
 if (THREAD_SCHEMA_VERSION !== "1.2.0" || outcome.state !== "available" || safe.resultId !== "result" || answer.state !== "available" || answer.answer.content[0].text !== "answer") process.exit(1);
 `,
@@ -42,7 +43,8 @@ if (THREAD_SCHEMA_VERSION !== "1.2.0" || outcome.state !== "available" || safe.r
   execFileSync(process.execPath, ["smoke.mjs"], { cwd: consumerDirectory, stdio: "inherit" });
   writeFileSync(
     join(consumerDirectory, "smoke.ts"),
-    `import { ToolResult, createToolResult, isIdentifiedToolResult, projectToolResult, SafeToolResultProjection, createThreadAnswerRef, projectAssistantAnswer, type AssistantAnswerProjectionOutcome, type IdentifiedToolResult, type SafeAssistantAnswerProjection, type ThreadAnswerRef, type ToolResultAuthorityDecision, type ToolResultCorrelation, type ToolResultProjectionOutcome, type ToolResultTerminalStatus } from "@kontourai/thread";
+    `import { ToolResult, createToolResult, isIdentifiedToolResult, projectToolResult, SafeToolResultProjection, type IdentifiedToolResult, type ToolResultAuthorityDecision, type ToolResultCorrelation, type ToolResultProjectionOutcome, type ToolResultTerminalStatus } from "@kontourai/thread";
+import { createObservedMessageIdentity, createThreadAnswerRef, projectAssistantAnswer, type AssistantAnswerProjectionOutcome, type SafeAssistantAnswerProjection, type ThreadAnswerRef } from "@kontourai/thread/answer";
 const status: ToolResultTerminalStatus = "error";
 const authorityDecision: ToolResultAuthorityDecision = { decision: "denied", authority: "policy" };
 const correlations: ToolResultCorrelation[] = [{ namespace: "source", kind: "event", id: "event-1" }];
@@ -51,7 +53,7 @@ const parsed = ToolResult.parse(result);
 if (!isIdentifiedToolResult(parsed)) throw new Error("lost identity");
 const safe = SafeToolResultProjection.parse({ resultId: parsed.resultId, name: "tool", terminalStatus: parsed.terminalStatus, authorityDecision, correlations, content: [], truncated: false, omittedParts: 0, omittedTextBytes: 0, omittedMetadataBytes: 0 });
 const outcome: ToolResultProjectionOutcome = projectToolResult(result);
-const answerRef: ThreadAnswerRef = createThreadAnswerRef("thread", "message");
+const answerRef: ThreadAnswerRef = createThreadAnswerRef(createObservedMessageIdentity("thread", "message"));
 const answer: AssistantAnswerProjectionOutcome = projectAssistantAnswer(answerRef, { id: "message", threadId: "thread", role: "assistant", timestamp: 1, content: [{ type: "text", text: "answer" }] });
 const safeAnswer: SafeAssistantAnswerProjection | undefined = answer.state === "available" ? answer.answer : undefined;
 void safe;
@@ -73,8 +75,8 @@ void safeAnswer;
 const savedProcess = globalThis.process;
 globalThis.process = undefined;
 try {
-  const { createThreadAnswerRef, projectAssistantAnswer } = await import("@kontourai/thread");
-  const ref = createThreadAnswerRef("thread", "message");
+  const { createObservedMessageIdentity, createThreadAnswerRef, projectAssistantAnswer } = await import("@kontourai/thread/answer");
+  const ref = createThreadAnswerRef(createObservedMessageIdentity("thread", "message"));
   const outcome = projectAssistantAnswer(ref, { id: "message", threadId: "thread", role: "assistant", timestamp: 1, content: [{ type: "text", text: "<b>inert</b>" }] });
   if (outcome.state !== "available" || outcome.answer.content[0].text !== "<b>inert</b>") throw new Error("browser-like answer projection failed");
 } finally {

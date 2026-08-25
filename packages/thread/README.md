@@ -17,12 +17,22 @@ the mandatory omission counters on the projection.
 
 `ThreadAnswerRef` is an exact, portable identity for one owner-issued assistant
 message: `{ authority: "@kontourai/thread", schemaVersion: "1.2.0",
-kind: "assistant-message", threadId, messageId }`. It is separate from the
+kind: "assistant-message", standing: "observed", threadId, messageId }`. It is separate from the
 serialized Thread/Message schema, so this additive API does **not** change the
 Thread schema version or require Ferry adapters to invent source identities.
 
-Use `createThreadAnswerRef(threadId, messageId)` only with the source owner's
-IDs, then use the total `projectAssistantAnswer(ref, unknownMessage)` at a
+The producer creates `createObservedMessageIdentity(threadId, messageId)` only
+when it byte-observed the owner-issued tuple, then passes that fact to
+`createThreadAnswerRef(identity)`. Thread never infers observation from an ID's
+shape, a correlation, an adapter position, or an ID that happens to match.
+Synthetic, adapter-fallback, and unknown identity facts cannot create or parse
+as a `ThreadAnswerRef`.
+
+IDs are opaque Unicode strings: they may look like paths, URLs, or percent
+encodings. Thread never normalizes or dereferences them, so `%2f` and `%2F`
+remain different IDs.
+
+Use the total `projectAssistantAnswer(ref, unknownMessage)` at a
 consumer boundary. It returns a typed unavailable reason for bad input, a
 non-assistant message, an identity mismatch, corrupt text, or an answer with
 no visible text; it does not throw a Zod error for those inputs.
@@ -37,9 +47,10 @@ visible text candidates only; intentionally excluded reasoning/tools are not
 misreported as truncation. Source metadata has an explicit zero-byte budget.
 
 ```ts
-import { createThreadAnswerRef, projectAssistantAnswer } from "@kontourai/thread";
+import { createObservedMessageIdentity, createThreadAnswerRef, projectAssistantAnswer } from "@kontourai/thread";
 
-const ref = createThreadAnswerRef("source-thread-42", "source-message-7");
+const observed = createObservedMessageIdentity("source-thread-42", "source-message-7");
+const ref = createThreadAnswerRef(observed);
 const outcome = projectAssistantAnswer(ref, importedMessage);
 if (outcome.state === "available") {
   // Render outcome.answer.content as plain inert text, not executable markup.
