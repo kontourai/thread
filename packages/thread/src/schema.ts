@@ -598,31 +598,26 @@ export const MAX_PROJECTED_TOOL_RESULT_TEXT_BYTES = 64 * 1024;
 export const MAX_PROJECTED_TOOL_RESULT_LABEL_BYTES = 256;
 /** Maximum UTF-8 bytes in a projected media type. */
 export const MAX_PROJECTED_TOOL_RESULT_MEDIA_TYPE_BYTES = 256;
+/** Maximum UTF-8 bytes in each projected authority or correlation scalar. */
+export const MAX_PROJECTED_TOOL_RESULT_METADATA_FIELD_BYTES = 256;
 /** Maximum UTF-8 bytes across every string retained by a safe projection. */
-export const MAX_PROJECTED_TOOL_RESULT_BYTES = 192 * 1024;
+export const MAX_PROJECTED_TOOL_RESULT_BYTES = 72 * 1024;
 
-const normalizeProjectionString = (value: string): string => {
-  if (!isWellFormedUnicode(value)) {
-    throw new TypeError("safe projection fields must be well-formed Unicode");
-  }
-  return value.normalize("NFC");
-};
-
-const NormalizedProjectionString = WellFormedUnicode.refine(
-  (value) => value.normalize("NFC") === value,
-  { message: "must be NFC-normalized" },
-);
-const ProjectedLabel = NormalizedProjectionString.refine(
+const ProjectedLabel = WellFormedUnicode.refine(
   hasUtf8BytesAtMost(MAX_PROJECTED_TOOL_RESULT_LABEL_BYTES),
   { message: `must be at most ${MAX_PROJECTED_TOOL_RESULT_LABEL_BYTES} UTF-8 bytes` },
 );
-const ProjectedMediaType = NormalizedProjectionString.refine(
+const ProjectedMediaType = WellFormedUnicode.refine(
   hasUtf8BytesAtMost(MAX_PROJECTED_TOOL_RESULT_MEDIA_TYPE_BYTES),
   { message: `must be at most ${MAX_PROJECTED_TOOL_RESULT_MEDIA_TYPE_BYTES} UTF-8 bytes` },
 );
+const ProjectedMetadataScalar = WellFormedUnicode.refine(
+  hasUtf8BytesAtMost(MAX_PROJECTED_TOOL_RESULT_METADATA_FIELD_BYTES),
+  { message: `must be at most ${MAX_PROJECTED_TOOL_RESULT_METADATA_FIELD_BYTES} UTF-8 bytes` },
+);
 
 export const SafeToolResultPart = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("text"), text: NormalizedProjectionString }),
+  z.object({ type: z.literal("text"), text: WellFormedUnicode }),
   z.object({ type: z.literal("image"), mediaType: ProjectedMediaType }),
   z.object({
     type: z.literal("file"),
@@ -633,6 +628,34 @@ export const SafeToolResultPart = z.discriminatedUnion("type", [
 ]);
 export type SafeToolResultPart = z.infer<typeof SafeToolResultPart>;
 
+export const SafeToolResultAuthorityDecision = z.object({
+  decision: z.literal("denied"),
+  authority: ProjectedMetadataScalar,
+  policyId: ProjectedMetadataScalar.optional(),
+});
+export type SafeToolResultAuthorityDecision = z.infer<typeof SafeToolResultAuthorityDecision>;
+
+export const SafeToolResultCorrelation = z.object({
+  namespace: ProjectedMetadataScalar,
+  kind: z.enum(["session", "turn", "event", "message", "result"]),
+  id: ProjectedMetadataScalar,
+});
+export type SafeToolResultCorrelation = z.infer<typeof SafeToolResultCorrelation>;
+
+export const SafeToolResultCorrelations = z
+  .array(SafeToolResultCorrelation)
+  .max(16)
+  .superRefine((correlations, ctx) => {
+    const seen = new Set<string>();
+    for (const [index, correlation] of correlations.entries()) {
+      const key = JSON.stringify([correlation.namespace, correlation.kind, correlation.id]);
+      if (seen.has(key)) {
+        ctx.addIssue({ code: "custom", path: [index], message: "correlations must be unique" });
+      }
+      seen.add(key);
+    }
+  });
+
 const projectedTextBytes = (content: SafeToolResultPart[]): number =>
   content.reduce((bytes, part) => bytes + (part.type === "text" ? utf8ByteLength(part.text) : 0), 0);
 
@@ -640,8 +663,8 @@ const projectedPayloadBytes = (result: {
   resultId: string;
   name: string;
   terminalStatus: string;
-  authorityDecision?: ToolResultAuthorityDecision;
-  correlations?: ToolResultCorrelation[];
+  authorityDecision?: SafeToolResultAuthorityDecision;
+  correlations?: SafeToolResultCorrelation[];
   content: SafeToolResultPart[];
 }): number => {
   let bytes = utf8ByteLength(result.resultId) + utf8ByteLength(result.name) + utf8ByteLength(result.terminalStatus);
@@ -676,12 +699,13 @@ export const SafeToolResultProjection = z
     resultId: ToolResultId,
     name: ProjectedLabel,
     terminalStatus: ToolResultTerminalStatus,
-    authorityDecision: ToolResultAuthorityDecision.optional(),
-    correlations: ToolResultCorrelations.optional(),
+    authorityDecision: SafeToolResultAuthorityDecision.optional(),
+    correlations: SafeToolResultCorrelations.optional(),
     content: z.array(SafeToolResultPart).max(MAX_PROJECTED_TOOL_RESULT_PARTS),
     truncated: z.boolean(),
     omittedParts: z.number().int().nonnegative(),
     omittedTextBytes: z.number().int().nonnegative(),
+    omittedMetadataBytes: z.number().int().nonnegative(),
   })
   .superRefine((result, ctx) => {
     if (projectedTextBytes(result.content) > MAX_PROJECTED_TOOL_RESULT_TEXT_BYTES) {
@@ -697,7 +721,8 @@ export const SafeToolResultProjection = z
         message: `projected payload must be at most ${MAX_PROJECTED_TOOL_RESULT_BYTES} UTF-8 bytes`,
       });
     }
-    const hasOmissions = result.omittedParts > 0 || result.omittedTextBytes > 0;
+    const hasOmissions =
+      result.omittedParts > 0 || result.omittedTextBytes > 0 || result.omittedMetadataBytes > 0;
     if (result.truncated !== hasOmissions) {
       ctx.addIssue({
         code: "custom",
@@ -710,7 +735,7 @@ export type SafeToolResultProjection = z.infer<typeof SafeToolResultProjection>;
 
 export type ToolResultProjectionOutcome =
   | { state: "available"; result: SafeToolResultProjection }
-  | { state: "unavailable"; reason: "identity-not-captured" };
+  | { state: "unavailable"; reason: "identity-not-captured" | "corrupt-content" };
 
 /** Truncates at Unicode code-point boundaries, so it never leaves a broken emoji surrogate. */
 const truncateUtf8 = (value: string, limit: number): { value: string; omittedBytes: number } => {
@@ -727,15 +752,18 @@ const truncateUtf8 = (value: string, limit: number): { value: string; omittedByt
   return { value: value.slice(0, end), omittedBytes: utf8ByteLength(value) - bytes };
 };
 
-const safeLabel = (value: string, fallback: string): string => {
+const safeLabel = (value: string, fallback: string): { value: string; omittedBytes: number } => {
   const nonempty = value.length > 0 ? value : fallback;
-  return truncateUtf8(normalizeProjectionString(nonempty), MAX_PROJECTED_TOOL_RESULT_LABEL_BYTES).value;
+  const truncated = truncateUtf8(nonempty, MAX_PROJECTED_TOOL_RESULT_LABEL_BYTES);
+  return { value: truncated.value, omittedBytes: value.length === 0 ? 0 : truncated.omittedBytes };
 };
 
-const safeMediaType = (mediaType: string): string =>
-  truncateUtf8(normalizeProjectionString(mediaType), MAX_PROJECTED_TOOL_RESULT_MEDIA_TYPE_BYTES).value;
+const safeMediaType = (mediaType: string): { value: string; omittedBytes: number } => {
+  const truncated = truncateUtf8(mediaType, MAX_PROJECTED_TOOL_RESULT_MEDIA_TYPE_BYTES);
+  return { value: truncated.value, omittedBytes: truncated.omittedBytes };
+};
 
-const safeFileName = (name: string): string => {
+const safeFileName = (name: string): { value: string; omittedBytes: number } => {
   // Paths, traversal markers, and control characters are not portable names.
   if (
     name.length === 0 ||
@@ -743,9 +771,67 @@ const safeFileName = (name: string): string => {
     name === ".." ||
     /[\\/\u0000-\u001F\u007F]/u.test(name)
   ) {
-    return "file";
+    return { value: "file", omittedBytes: utf8ByteLength(name) };
   }
   return safeLabel(name, "file");
+};
+
+const safeMetadataScalar = (value: string): { value: string; omittedBytes: number } => {
+  const truncated = truncateUtf8(value, MAX_PROJECTED_TOOL_RESULT_METADATA_FIELD_BYTES);
+  return { value: truncated.value, omittedBytes: truncated.omittedBytes };
+};
+
+const projectAuthorityDecision = (
+  authorityDecision: ToolResultAuthorityDecision | undefined,
+): { value?: SafeToolResultAuthorityDecision; omittedBytes: number } => {
+  if (authorityDecision === undefined) return { omittedBytes: 0 };
+  const authority = safeMetadataScalar(authorityDecision.authority);
+  const policyId = authorityDecision.policyId === undefined
+    ? undefined
+    : safeMetadataScalar(authorityDecision.policyId);
+  return {
+    value: {
+      decision: "denied",
+      authority: authority.value,
+      ...(policyId === undefined ? {} : { policyId: policyId.value }),
+    },
+    omittedBytes: authority.omittedBytes + (policyId?.omittedBytes ?? 0),
+  };
+};
+
+const projectCorrelations = (
+  correlations: ToolResultCorrelation[] | undefined,
+): { value?: SafeToolResultCorrelation[]; omittedBytes: number } => {
+  if (correlations === undefined) return { omittedBytes: 0 };
+  let omittedBytes = 0;
+  const seen = new Set<string>();
+  const value: SafeToolResultCorrelation[] = [];
+  for (const correlation of correlations) {
+    const namespace = safeMetadataScalar(correlation.namespace);
+    const id = safeMetadataScalar(correlation.id);
+    omittedBytes += namespace.omittedBytes + id.omittedBytes;
+    const projected = { namespace: namespace.value, kind: correlation.kind, id: id.value };
+    const key = JSON.stringify([projected.namespace, projected.kind, projected.id]);
+    if (seen.has(key)) {
+      omittedBytes +=
+        utf8ByteLength(correlation.namespace) +
+        utf8ByteLength(correlation.kind) +
+        utf8ByteLength(correlation.id);
+      continue;
+    }
+    seen.add(key);
+    value.push(projected);
+  }
+  return { value, omittedBytes };
+};
+
+const hasWellFormedProjectionContent = (result: ToolResult): boolean => {
+  if (!isWellFormedUnicode(result.name)) return false;
+  return result.content.every((part) => {
+    if (part.type === "text") return isWellFormedUnicode(part.text);
+    if (part.type === "image") return isWellFormedUnicode(part.mediaType);
+    return isWellFormedUnicode(part.name) && isWellFormedUnicode(part.mediaType);
+  });
 };
 
 /**
@@ -757,31 +843,43 @@ export const projectToolResult = (result: ToolResult): ToolResultProjectionOutco
   if (!isIdentifiedToolResult(canonical)) {
     return { state: "unavailable", reason: "identity-not-captured" };
   }
+  if (!hasWellFormedProjectionContent(canonical)) {
+    return { state: "unavailable", reason: "corrupt-content" };
+  }
 
   const retainedParts = canonical.content.slice(0, MAX_PROJECTED_TOOL_RESULT_PARTS);
   const omittedParts = canonical.content.length - retainedParts.length;
-  const normalizedText = (value: string): string => normalizeProjectionString(value);
+  let omittedMetadataBytes = 0;
   const retainedContent = retainedParts.map((part): SafeToolResultPart => {
     if (part.type === "text") return { type: "text", text: "" };
-    if (part.type === "image") return { type: "image", mediaType: safeMediaType(part.mediaType) };
+    if (part.type === "image") {
+      const mediaType = safeMediaType(part.mediaType);
+      omittedMetadataBytes += mediaType.omittedBytes;
+      return { type: "image", mediaType: mediaType.value };
+    }
+    const name = safeFileName(part.name);
+    const mediaType = safeMediaType(part.mediaType);
+    omittedMetadataBytes += name.omittedBytes + mediaType.omittedBytes;
     return {
       type: "file",
-      name: safeFileName(part.name),
-      mediaType: safeMediaType(part.mediaType),
+      name: name.value,
+      mediaType: mediaType.value,
       ...(part.size === undefined ? {} : { size: part.size }),
     };
   });
   const tailOmittedTextBytes = canonical.content
     .slice(MAX_PROJECTED_TOOL_RESULT_PARTS)
-    .reduce((bytes, part) => bytes + (part.type === "text" ? utf8ByteLength(normalizedText(part.text)) : 0), 0);
+    .reduce((bytes, part) => bytes + (part.type === "text" ? utf8ByteLength(part.text) : 0), 0);
+  const name = safeLabel(canonical.name, "tool");
+  const authorityDecision = projectAuthorityDecision(canonical.authorityDecision);
+  const correlations = projectCorrelations(canonical.correlations);
+  omittedMetadataBytes += name.omittedBytes + authorityDecision.omittedBytes + correlations.omittedBytes;
   const staticProjection = {
     resultId: canonical.resultId,
-    name: safeLabel(canonical.name, "tool"),
+    name: name.value,
     terminalStatus: canonical.terminalStatus,
-    ...(canonical.authorityDecision === undefined
-      ? {}
-      : { authorityDecision: canonical.authorityDecision }),
-    ...(canonical.correlations === undefined ? {} : { correlations: canonical.correlations }),
+    ...(authorityDecision.value === undefined ? {} : { authorityDecision: authorityDecision.value }),
+    ...(correlations.value === undefined ? {} : { correlations: correlations.value }),
     content: retainedContent,
   };
   const staticBytes = projectedPayloadBytes(staticProjection);
@@ -797,7 +895,7 @@ export const projectToolResult = (result: ToolResult): ToolResultProjectionOutco
   let omittedTextBytes = tailOmittedTextBytes;
   const content = retainedParts.map((part, index): SafeToolResultPart => {
     if (part.type === "text") {
-      const projected = truncateUtf8(normalizedText(part.text), availableTextBytes);
+      const projected = truncateUtf8(part.text, availableTextBytes);
       availableTextBytes -= utf8ByteLength(projected.value);
       omittedTextBytes += projected.omittedBytes;
       return { type: "text", text: projected.value };
@@ -808,9 +906,10 @@ export const projectToolResult = (result: ToolResult): ToolResultProjectionOutco
   const projection = SafeToolResultProjection.parse({
     ...staticProjection,
     content,
-    truncated: omittedParts > 0 || omittedTextBytes > 0,
+    truncated: omittedParts > 0 || omittedTextBytes > 0 || omittedMetadataBytes > 0,
     omittedParts,
     omittedTextBytes,
+    omittedMetadataBytes,
   });
   return {
     state: "available",
@@ -823,9 +922,9 @@ export const projectToolResult = (result: ToolResult): ToolResultProjectionOutco
 // ---------------------------------------------------------------------------
 
 export const threadToJson = (thread: Thread, pretty = true): string => {
-  Thread.parse(thread);
+  const parsed = Thread.parse(thread);
   return JSON.stringify(
-    { ...thread, schemaVersion: thread.schemaVersion ?? THREAD_SCHEMA_VERSION },
+    { ...parsed, schemaVersion: parsed.schemaVersion ?? THREAD_SCHEMA_VERSION },
     null,
     pretty ? 2 : 0,
   );

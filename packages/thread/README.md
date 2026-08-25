@@ -8,9 +8,10 @@ Schema 1.2.0 also supports owner-issued tool-result identity. Legacy imported
 results remain valid, but only results carrying both `resultId` and
 `terminalStatus` can be safely retained for later dereference. Use
 `projectToolResult` when passing one to another consumer: it produces a
-bounded inert view (32 parts, 64 KiB of UTF-8 text, and 192 KiB of projected
+bounded inert view (32 parts, 64 KiB of UTF-8 text, and 72 KiB of projected
 string data) and intentionally omits payload bytes, URLs, annotations, and
-structured result data.
+structured result data. Any dropped text or projected metadata is declared by
+the mandatory omission counters on the projection.
 
 ```ts
 import { threadFromJson, getToolCalls, isAssistantMessage } from "@kontourai/thread";

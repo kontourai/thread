@@ -266,9 +266,10 @@ describe("tool result identity", () => {
           { type: "image", mediaType: "image/png" },
           { type: "file", name: "file", mediaType: "text/plain", size: 7 },
         ],
-        truncated: false,
+        truncated: true,
         omittedParts: 0,
         omittedTextBytes: 0,
+        omittedMetadataBytes: 58,
       },
     });
     expect(JSON.stringify(projected)).not.toContain("call-1");
@@ -296,27 +297,38 @@ describe("tool result identity", () => {
     expect(projected.result.truncated).toBe(true);
     expect(projected.result.omittedParts).toBe(1);
     expect(projected.result.omittedTextBytes).toBe(217);
+    expect(projected.result.omittedMetadataBytes).toBe(0);
   });
 
-  it("normalizes projection text, rejects lone surrogates, and bounds media types", () => {
-    const normalized = projectToolResult(
+  it("preserves well-formed source scalars, reports corruption, and bounds media types", () => {
+    const preserved = projectToolResult(
       ToolResult.parse({
         ...identified("success"),
         content: [{ type: "text", text: "e\u0301" }],
       }),
     );
-    expect(normalized).toEqual({
+    expect(preserved).toEqual({
       state: "available",
-      result: expect.objectContaining({ content: [{ type: "text", text: "é" }] }),
+      result: expect.objectContaining({ content: [{ type: "text", text: "e\u0301" }] }),
     });
-    expect(() =>
+    expect(
       projectToolResult(
         ToolResult.parse({
           ...identified("success"),
           content: [{ type: "text", text: "\ud800" }],
         }),
       ),
-    ).toThrow(/well-formed Unicode/);
+    ).toEqual({ state: "unavailable", reason: "corrupt-content" });
+    expect(
+      projectToolResult(
+        ToolResult.parse({ ...legacy, name: "\ud800", content: [{ type: "text", text: "ok" }] }),
+      ),
+    ).toEqual({ state: "unavailable", reason: "identity-not-captured" });
+    expect(
+      projectToolResult(
+        ToolResult.parse({ ...identified("success"), name: "\ud800" }),
+      ),
+    ).toEqual({ state: "unavailable", reason: "corrupt-content" });
 
     const media = projectToolResult(
       ToolResult.parse({
@@ -326,7 +338,11 @@ describe("tool result identity", () => {
     );
     expect(media).toEqual({
       state: "available",
-      result: expect.objectContaining({ content: [{ type: "image", mediaType: "m".repeat(256) }] }),
+      result: expect.objectContaining({
+        content: [{ type: "image", mediaType: "m".repeat(256) }],
+        truncated: true,
+        omittedMetadataBytes: 69_744,
+      }),
     });
   });
 
@@ -339,8 +355,15 @@ describe("tool result identity", () => {
       truncated: false,
       omittedParts: 0,
       omittedTextBytes: 0,
+      omittedMetadataBytes: 0,
     };
     expect(SafeToolResultProjection.parse(safe)).toEqual(safe);
+    expect(
+      SafeToolResultProjection.parse({
+        ...safe,
+        content: [{ type: "text", text: "e\u0301" }],
+      }),
+    ).toEqual({ ...safe, content: [{ type: "text", text: "e\u0301" }] });
     expect(() =>
       SafeToolResultProjection.parse({
         ...safe,
@@ -357,24 +380,41 @@ describe("tool result identity", () => {
     expect(() =>
       SafeToolResultProjection.parse({ ...safe, omittedTextBytes: 1 }),
     ).toThrow();
+    expect(() =>
+      SafeToolResultProjection.parse({ ...safe, omittedMetadataBytes: 1 }),
+    ).toThrow();
+    expect(() =>
+      SafeToolResultProjection.parse({
+        ...safe,
+        authorityDecision: { decision: "denied", authority: "a".repeat(257) },
+      }),
+    ).toThrow();
+    expect(() =>
+      SafeToolResultProjection.parse({
+        ...safe,
+        correlations: [{ namespace: "source", kind: "event", id: "i".repeat(257) }],
+      }),
+    ).toThrow();
   });
 
   it("enforces a total safe-projection payload budget independent of text", () => {
     const maximumId = "x".repeat(4096);
+    const maximumMetadata = "m".repeat(256);
     const oversized = {
       resultId: maximumId,
       name: "tool",
       terminalStatus: "unknown" as const,
-      authorityDecision: { decision: "denied" as const, authority: maximumId, policyId: maximumId },
+      authorityDecision: { decision: "denied" as const, authority: maximumMetadata, policyId: maximumMetadata },
       correlations: Array.from({ length: 16 }, (_, index) => ({
-        namespace: `${index}`.padEnd(4096, "n"),
+        namespace: `${index}`.padEnd(256, "n"),
         kind: "event" as const,
-        id: maximumId,
+        id: maximumMetadata,
       })),
       content: [{ type: "text" as const, text: "a".repeat(65_536) }],
       truncated: false,
       omittedParts: 0,
       omittedTextBytes: 0,
+      omittedMetadataBytes: 0,
     };
     expect(() => SafeToolResultProjection.parse(oversized)).toThrow();
 
@@ -383,7 +423,11 @@ describe("tool result identity", () => {
         ...identified("unknown"),
         resultId: maximumId,
         authorityDecision: { decision: "denied", authority: maximumId, policyId: maximumId },
-        correlations: oversized.correlations,
+        correlations: Array.from({ length: 16 }, (_, index) => ({
+          namespace: `${index}`.padEnd(4096, "n"),
+          kind: "event" as const,
+          id: maximumId,
+        })),
         content: [{ type: "text", text: "a".repeat(65_536) }],
       }),
     );
@@ -391,6 +435,7 @@ describe("tool result identity", () => {
     if (projected.state === "available") {
       expect(projected.result.content[0]).toEqual(expect.objectContaining({ type: "text" }));
       expect(projected.result.truncated).toBe(true);
+      expect(projected.result.omittedMetadataBytes).toBe(130_560);
       expect(SafeToolResultProjection.parse(projected.result)).toEqual(projected.result);
     }
   });
@@ -421,6 +466,24 @@ describe("json round trip", () => {
     const thread = { ...createThread([]), schemaVersion: undefined };
     const parsed = JSON.parse(threadToJson(thread));
     expect(parsed.schemaVersion).toBe(THREAD_SCHEMA_VERSION);
+  });
+
+  it("serializes the canonical parsed thread without undeclared fields", () => {
+    const handBuilt = {
+      ...createThread([createUserMessage("t", "question")]),
+      undeclaredThreadField: "do-not-serialize",
+      messages: [
+        {
+          ...createUserMessage("t", "question"),
+          undeclaredMessageField: "do-not-serialize",
+          content: [{ type: "text", text: "question", undeclaredPartField: "do-not-serialize" }],
+        },
+      ],
+    } as unknown as Thread;
+    const serialized = JSON.parse(threadToJson(handBuilt));
+    expect(serialized.undeclaredThreadField).toBeUndefined();
+    expect(serialized.messages[0].undeclaredMessageField).toBeUndefined();
+    expect(serialized.messages[0].content[0].undeclaredPartField).toBeUndefined();
   });
 
   it("round-trips identified result content without projection loss", () => {
