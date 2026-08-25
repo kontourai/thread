@@ -13,6 +13,40 @@ string data) and intentionally omits payload bytes, URLs, annotations, and
 structured result data. Any dropped text or projected metadata is declared by
 the mandatory omission counters on the projection.
 
+## Assistant-answer references
+
+`ThreadAnswerRef` is an exact, portable identity for one owner-issued assistant
+message: `{ authority: "@kontourai/thread", schemaVersion: "1.2.0",
+kind: "assistant-message", threadId, messageId }`. It is separate from the
+serialized Thread/Message schema, so this additive API does **not** change the
+Thread schema version or require Ferry adapters to invent source identities.
+
+Use `createThreadAnswerRef(threadId, messageId)` only with the source owner's
+IDs, then use the total `projectAssistantAnswer(ref, unknownMessage)` at a
+consumer boundary. It returns a typed unavailable reason for bad input, a
+non-assistant message, an identity mismatch, corrupt text, or an answer with
+no visible text; it does not throw a Zod error for those inputs.
+
+The available form retains ordered, inert text parts only. It never exposes
+reasoning, tool calls or arguments, structured results, image/file payloads,
+annotations, attachment paths or bytes, or source/private metadata. Markdown,
+HTML, and URLs remain strings. The contract caps visible text at 32 parts,
+16 KiB per part, 64 KiB total text, and 72 KiB across the ref plus content.
+`truncated`, `omittedParts`, and `omittedTextBytes` describe capacity loss among
+visible text candidates only; intentionally excluded reasoning/tools are not
+misreported as truncation. Source metadata has an explicit zero-byte budget.
+
+```ts
+import { createThreadAnswerRef, projectAssistantAnswer } from "@kontourai/thread";
+
+const ref = createThreadAnswerRef("source-thread-42", "source-message-7");
+const outcome = projectAssistantAnswer(ref, importedMessage);
+if (outcome.state === "available") {
+  // Render outcome.answer.content as plain inert text, not executable markup.
+  console.log(outcome.answer.content);
+}
+```
+
 ```ts
 import { threadFromJson, getToolCalls, isAssistantMessage } from "@kontourai/thread";
 
