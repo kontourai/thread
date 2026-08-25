@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.5.0](https://github.com/kontourai/thread/compare/ferry-v0.4.0...ferry-v0.5.0) (2026-08-25)
+
+
+### Features
+
+* **ferry:** retain observed tool result identity ([98b67d2](https://github.com/kontourai/thread/commit/98b67d211ae9d53d6b99174e1b5b3c8299a97c64))
+* **ferry:** row emitter, harness dimension, and a streaming usage fold ([#41](https://github.com/kontourai/thread/issues/41)) ([5b335fe](https://github.com/kontourai/thread/commit/5b335fed1ac5fd97199e737fa18f045826207f7d))
+* publish stable tool result identity ([fe490e7](https://github.com/kontourai/thread/commit/fe490e7344bcf72726c2432c2645416ddd03ab84))
+* **thread:** add stable tool result identity ([74c17a0](https://github.com/kontourai/thread/commit/74c17a0539c8e9842b59588aaa39d21ea0970a36))
+
+
+### Fixes
+
+* **ferry:** ground result identity in source records ([c559f74](https://github.com/kontourai/thread/commit/c559f74f80ae1b122d8d8500757f608727396a36))
+* **ferry:** make Codex exec legible and name tool results after their calls ([#39](https://github.com/kontourai/thread/issues/39)) ([96c605a](https://github.com/kontourai/thread/commit/96c605a255fcff1dddd0985abc2ac68db4cf6ab4))
+* **ferry:** separate fallback provenance from source ([8e52a88](https://github.com/kontourai/thread/commit/8e52a88ef3c87c0796412e74e3be683801027e73))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @kontourai/thread bumped from ^0.3.0 to ^0.4.0
+
 ## [0.4.0](https://github.com/kontourai/thread/compare/ferry-v0.3.0...ferry-v0.4.0) (2026-08-10)
 
 
