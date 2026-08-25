@@ -156,7 +156,7 @@ describe("claude-code importer", () => {
     expect(first.resultId).toMatch(/^ferry:claude-code:sha256:[a-f0-9]{64}$/);
     expect(first.resultId).not.toBe(first.toolCallId);
     expect(first.terminalStatus).toBe("success");
-    expect(first.isError).toBe(false);
+    expect(first.isError).toBeUndefined();
     expect(first.correlations).toEqual([
       { namespace: "claude-code", kind: "session", id: "11111111-aaaa-bbbb-cccc-000000000001" },
       { namespace: "claude-code", kind: "event", id: "uuid-user-2" },
@@ -427,6 +427,10 @@ describe("codex importer", () => {
       expect(result.terminalStatus).toBe("unknown");
       expect(result.isError).toBeUndefined();
     }
+    expect(outputs[0]?.toolResults[0]?.correlations).toEqual([
+      { namespace: "codex", kind: "session", id: "019f0000-1111-2222-3333-444444444444" },
+      { namespace: "codex", kind: "turn", id: "turn-1" },
+    ]);
   });
 
   it("keeps non-event inter-agent chatter skipped and encrypted reasoning out", () => {
@@ -1021,7 +1025,48 @@ describe("tool result identity anchors", () => {
     expect(firstResults.toolResults.map((result) => result.resultId)).toEqual(
       rewrittenResults.toolResults.map((result) => result.resultId),
     );
-    expect(firstResults.toolResults.map((result) => result.terminalStatus)).toEqual(["success", "error"]);
+    expect(firstResults.toolResults.map((result) => result.terminalStatus)).toEqual(["success", "unknown"]);
+  });
+
+  it("uses raw record occurrence across restores and filters for repeated Claude UUIDs", () => {
+    const source = [
+      '{"type":"assistant","uuid":"a","sessionId":"s","timestamp":"2026-08-01T00:00:00Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"c","name":"x","input":{}}]}}',
+      '{"type":"user","uuid":"same","sessionId":"s","timestamp":"2026-08-01T00:00:01Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"c","content":"one"}]}}',
+      '{"type":"user","uuid":"meta","sessionId":"s","isMeta":true,"timestamp":"2026-08-01T00:00:02Z","message":{"role":"user","content":"ignored"}}',
+      '{"type":"user","uuid":"side","sessionId":"s","isSidechain":true,"timestamp":"2026-08-01T00:00:03Z","message":{"role":"user","content":"ignored"}}',
+      '{"type":"user","uuid":"same","sessionId":"s","timestamp":"2026-08-01T00:00:04Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"c","content":"two"}]}}',
+    ].join("\n");
+    const ids = (thread: ReturnType<typeof importFromClaudeCode>) => thread.messages
+      .flatMap((message) => message.role === "tool" ? message.toolResults : [])
+      .map((result) => result.resultId);
+    const whole = importFromClaudeCode(source);
+    const incremental = createClaudeCodeImporter();
+    const lines = source.split("\n");
+    incremental.pushLines(lines.slice(0, 2));
+    const restored = restoreClaudeCodeImporter(incremental.state());
+    restored.pushLines(lines.slice(2));
+    expect(ids(restored.thread())).toEqual(ids(whole));
+    expect(new Set(ids(whole)).size).toBe(2);
+    expect(ids(importFromClaudeCode(source, { includeSidechains: true }))).toEqual(ids(whole));
+  });
+
+  it("backfills late Codex session correlation without changing its response-item identity", () => {
+    const source = [
+      '{"type":"response_item","timestamp":"2026-08-01T00:00:00Z","payload":{"type":"function_call_output","call_id":"c","output":"x"}}',
+      '{"type":"session_meta","payload":{"id":"late-session"}}',
+    ].join("\n");
+    const oneShot = importFromCodex(source);
+    const importer = createCodexImporter();
+    importer.pushLines([source.split("\n")[0]!]);
+    const restored = restoreCodexImporter(importer.state());
+    restored.pushLines([source.split("\n")[1]!]);
+    restored.finalize();
+    const result = (thread: ReturnType<typeof importFromCodex>) => thread.messages
+      .flatMap((message) => message.role === "tool" ? message.toolResults : [])[0]!;
+    expect(result(restored.thread()).resultId).toBe(result(oneShot).resultId);
+    expect(result(restored.thread()).correlations).toEqual([
+      { namespace: "codex", kind: "session", id: "late-session" },
+    ]);
   });
 });
 

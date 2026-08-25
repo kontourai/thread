@@ -242,9 +242,8 @@ export function importFromMuse(jsonContent: string, options: MuseImportOptions =
   }
   const exported = parsed.data;
 
-  const threadId =
-    exported.sessions.find((session) => typeof session.session_id === "string")?.session_id ??
-    "muse-session";
+  const sourceSessionId = exported.sessions.find((session) => typeof session.session_id === "string")?.session_id;
+  const threadId = sourceSessionId ?? "muse-session";
 
   const messages: Message[] = [];
   let syntheticId = 0;
@@ -472,6 +471,12 @@ export function importFromMuse(jsonContent: string, options: MuseImportOptions =
                   resultId: deterministicToolResultId("muse", [envelope.id], batchIndex),
                   // Result prose and embedded JSON do not declare terminal state.
                   terminalStatus: "unknown",
+                  ...(sourceSessionId === undefined
+                    ? {}
+                    : { correlations: [
+                        { namespace: "muse", kind: "session" as const, id: sourceSessionId },
+                        { namespace: "muse", kind: "event" as const, id: envelope.id },
+                      ] }),
                 }),
           });
         }

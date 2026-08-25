@@ -102,6 +102,8 @@ interface CodexReducerState {
   cliVersion?: string;
   provider?: string;
   currentModel?: string;
+  /** Only an actual turn_context.turn_id may correlate a result to a turn. */
+  currentTurnId?: string;
   importableItemCount: number;
   skippedLines: number;
   pending: { content: AssistantContent[]; timestamp: number; model?: string } | null;
@@ -185,6 +187,7 @@ function stepCodex(
   }
   if (record.type === "turn_context") {
     if (typeof payload["model"] === "string") state.currentModel = payload["model"];
+    if (typeof payload["turn_id"] === "string") state.currentTurnId = payload["turn_id"];
     state.duplicateAgentMessageText = undefined; return;
   }
   // A source timestamp may be absent. Capture the observation time while
@@ -278,18 +281,15 @@ function stepCodex(
         toolCallId: callId,
         name: resolvedName,
         content: [{ type: "text", text: extractOutputText(payload["output"]) }],
-        ...(state.sessionId === undefined
+        // The thread-scoped response-item ordinal is stable even when
+        // session_meta arrives later; reconciliation adds that source session.
+        resultId: deterministicToolResultId("codex", [`response-item:${recordOrdinal}`], 0),
+        // Codex response-item output records carry no result terminal status.
+        // In particular, never inspect output text or call state.
+        terminalStatus: "unknown",
+        ...(state.currentTurnId === undefined
           ? {}
-          : {
-              resultId: deterministicToolResultId(
-                "codex",
-                [state.sessionId, `response-item:${recordOrdinal}`],
-                0,
-              ),
-              // Codex response-item output records carry no result terminal
-              // status. In particular, never inspect output text or call state.
-              terminalStatus: "unknown" as const,
-            }),
+          : { correlations: [{ namespace: "codex", kind: "turn" as const, id: state.currentTurnId }] }),
       }],
     });
   }
@@ -412,6 +412,21 @@ function reconcileCodexStateMessageIds(state: CodexReducerState): void {
   }
 }
 
+/** Adds only source-recorded session correlation; never infers a turn by adjacency. */
+function reconcileCodexResultCorrelations(state: CodexReducerState): void {
+  if (state.sessionId === undefined) return;
+  for (const message of state.messages) {
+    if (message.role !== "tool") continue;
+    for (const result of message.toolResults) {
+      if (result.resultId === undefined) continue;
+      const session = { namespace: "codex", kind: "session" as const, id: state.sessionId };
+      if (!result.correlations?.some((item) => item.namespace === session.namespace && item.kind === session.kind && item.id === session.id)) {
+        result.correlations = [session, ...(result.correlations ?? [])];
+      }
+    }
+  }
+}
+
 /** JSON-safe checkpoint for a Codex incremental importer.
  *
  * Hosts pass complete JSONL lines only: ferry does not buffer partial bytes.
@@ -476,6 +491,7 @@ function codexImporter(
       // Do not give a tailing host an id based on the provisional fallback.
       // A session id resolves all accumulated state messages together.
       reconcileCodexStateMessageIds(snapshot);
+      reconcileCodexResultCorrelations(snapshot);
       if (!snapshot.sessionId) return [];
       const announcements = snapshot.messages.slice(snapshot.announcedMessageCount ?? 0);
       snapshot.announcedMessageCount = snapshot.messages.length;
@@ -487,6 +503,7 @@ function codexImporter(
       // identity just as a session_meta id would be.
       snapshot.sessionId ??= "codex-session";
       reconcileCodexStateMessageIds(snapshot);
+      reconcileCodexResultCorrelations(snapshot);
       const announcements = snapshot.messages.slice(snapshot.announcedMessageCount ?? 0);
       snapshot.announcedMessageCount = snapshot.messages.length;
       return announcements;

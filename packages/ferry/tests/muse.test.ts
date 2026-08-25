@@ -106,6 +106,10 @@ describe("muse importer — multi-turn session", () => {
     // Even though this particular output is JSON with success:true, Muse's
     // committed batch does not declare terminal standing.
     expect(tool.toolResults[0]?.terminalStatus).toBe("unknown");
+    expect(tool.toolResults[0]?.correlations).toEqual([
+      { namespace: "muse", kind: "session", id: "1023465b-9491-4a39-b8e3-111e73b61c50" },
+      { namespace: "muse", kind: "event", id: "400ed043-7f27-4bf2-8f7d-3e2f2cf40fea" },
+    ]);
   });
 
   it("does not double-count tool uses from muse's internal task lifecycle", () => {

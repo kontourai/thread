@@ -14,8 +14,8 @@
  * - Consecutive same-role messages are merged (API requires alternation).
  * - Empty text parts are omitted (the API rejects empty text blocks).
  * - Result identities, authority decisions, and source correlations are not
- *   representable. `error` maps to `is_error`; `cancelled` and `unknown`
- *   intentionally downgrade to an unmarked tool_result.
+ *   representable. `error`, `cancelled`, and `unknown` map to `is_error: true`
+ *   so a lossy export never presents an unresolved result as successful.
  * Replay caveats (emitted as-is, caller must handle before replay):
  * - A thread beginning with an assistant message exports assistant-first;
  *   the API requires a leading user turn.
@@ -164,7 +164,7 @@ export function exportToAnthropicMessages(thread: Thread): AnthropicMessage[] {
           // absent key is unambiguous where an empty array is untested
           // against the live API.
           ...(blocks.length > 0 ? { content: blocks } : {}),
-          ...(result.terminalStatus === "error"
+          ...(result.terminalStatus === "error" || result.terminalStatus === "cancelled" || result.terminalStatus === "unknown"
             ? { is_error: true }
             : result.terminalStatus === undefined && result.isError !== undefined
               ? { is_error: result.isError }

@@ -20,7 +20,8 @@
  *   not re-walked.
  * - Non-text tool result content is flattened to text placeholders.
  * - Tool-result identity uses the outer source message record id. `isError`
- *   false/true maps to success/error; absent stays unknown.
+ *   false maps to success; no byte-real failure record is retained, so true
+ *   and absent stay unknown.
  */
 
 import { z } from "zod";
@@ -228,16 +229,19 @@ export function importFromPi(jsonlContent: JsonlInput, options: PiImportOptions 
             name: typeof message["toolName"] === "string" ? message["toolName"] : "",
             content: text ? [{ type: "text", text }] : [],
             ...(message["isError"] === false ? { isError: false } : {}),
-            ...(message["isError"] === true ? { isError: true } : {}),
             ...(record.id === undefined
               ? {}
               : {
                   resultId: deterministicToolResultId("pi", [record.id], 0),
                   terminalStatus: message["isError"] === false
                     ? "success"
-                    : message["isError"] === true
-                      ? "error"
-                      : "unknown",
+                    : "unknown",
+                  ...(sessionId === undefined
+                    ? {}
+                    : { correlations: [
+                        { namespace: "pi", kind: "session" as const, id: sessionId },
+                        { namespace: "pi", kind: "message" as const, id: record.id },
+                      ] }),
                 }),
           },
         ],

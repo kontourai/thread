@@ -13,8 +13,9 @@
  * export to API formats.
  * Source tool-part `id` is the result anchor when available; message id plus
  * part index is the observed-shape fallback. `completed` is success and
- * `error` is error. No cancellation mapping is made without a byte-real
- * fixture proving OpenCode's terminal contract.
+ * No byte-real failure record is retained, so only `completed` maps success;
+ * every other status remains unknown. No cancellation mapping is made without
+ * a byte-real fixture proving OpenCode's terminal contract.
  */
 
 import { z } from "zod";
@@ -149,9 +150,7 @@ export function importFromOpenCode(jsonContent: string): Thread {
               : `${info.id}:part:${partIndex}`;
           const status = state["status"] === "completed"
             ? "success"
-            : state["status"] === "error"
-              ? "error"
-              : "unknown";
+            : "unknown";
           toolResults.push({
             toolCallId: callId,
             name,
@@ -167,7 +166,6 @@ export function importFromOpenCode(jsonContent: string): Thread {
               },
             ],
             ...(status === "success" ? { isError: false } : {}),
-            ...(status === "error" ? { isError: true } : {}),
             ...(sourcePartId === undefined
               ? {}
               : {

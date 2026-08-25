@@ -31,7 +31,7 @@ export interface ToolCallRow {
   parsedArguments?: Record<string, unknown>;
   /** Importer-derived analysis about the call (heuristic; see the schema). */
   derived?: Record<string, unknown>;
-  /** True/false once a result was seen; absent when the call is unpaired. */
+  /** Source-declared true/false; absent for an unpaired or unknown result. */
   isError?: boolean;
   /** Owner-issued identity for the matched result, when the importer captured it. */
   toolResultId?: string;

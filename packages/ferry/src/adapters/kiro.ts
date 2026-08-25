@@ -23,8 +23,8 @@
  * - `Compaction` snapshots are skipped (their messages duplicate history).
  * - Image byte arrays are imported as base64.
  * - Tool-result identity uses source `message_id` plus part index. Explicit
- *   `success`/`error` statuses map directly; every other or absent status is
- *   retained as `unknown` rather than inferred from result content.
+ *   `success` maps directly; no byte-real failure record is retained, so
+ *   `error` and every other/absent status remain `unknown`.
  */
 
 import { z } from "zod";
@@ -132,7 +132,7 @@ export function importFromKiro(jsonlContent: JsonlInput, options: KiroImportOpti
             content.push({ type: "image", data: base64, mediaType: `image/${format}` });
           }
         } else if (p["kind"] === "toolResult") {
-          const result = toToolResult(p["data"], messageId, partIndex);
+          const result = toToolResult(p["data"], options.sessionId, messageId, partIndex);
           if (result) toolResults.push(result);
         }
       }
@@ -205,7 +205,7 @@ export function importFromKiro(jsonlContent: JsonlInput, options: KiroImportOpti
       for (const [partIndex, part] of contentParts.entries()) {
         const p = asRecord(part);
         if (p?.["kind"] === "toolResult") {
-          const result = toToolResult(p["data"], messageId, partIndex);
+          const result = toToolResult(p["data"], options.sessionId, messageId, partIndex);
           if (result) toolResults.push(result);
         }
       }
@@ -243,23 +243,29 @@ export function importFromKiro(jsonlContent: JsonlInput, options: KiroImportOpti
 
 function toToolResult(
   data: unknown,
+  sourceSessionId: string | undefined,
   messageId: string | undefined,
   partIndex: number,
 ): ToolResult | null {
   const d = asRecord(data);
   if (!d || typeof d["toolUseId"] !== "string") return null;
-  const status = d["status"] === "success" ? "success" : d["status"] === "error" ? "error" : "unknown";
+  const status = d["status"] === "success" ? "success" : "unknown";
   return {
     toolCallId: d["toolUseId"],
     name: typeof d["name"] === "string" ? d["name"] : "",
     content: textFromResultParts(d["content"]),
     ...(status === "success" ? { isError: false } : {}),
-    ...(status === "error" ? { isError: true } : {}),
     ...(messageId === undefined
       ? {}
       : {
           resultId: deterministicToolResultId("kiro", [messageId], partIndex),
           terminalStatus: status,
+          ...(sourceSessionId === undefined
+            ? {}
+            : { correlations: [
+                { namespace: "kiro", kind: "session" as const, id: sourceSessionId },
+                { namespace: "kiro", kind: "message" as const, id: messageId },
+              ] }),
         }),
   };
 }

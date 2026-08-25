@@ -287,10 +287,24 @@ describe("markdown exporter", () => {
       type: "tool_result",
       tool_use_id: "c1",
       content: [{ type: "text", text: "cancelled" }],
+      is_error: true,
     });
     const errored = createThread([
       createToolMessage(t, [{ ...result, resultId: "result-2", terminalStatus: "error", isError: true }]),
     ]);
     expect(exportToAnthropicMessages(errored)[0]?.content[0]).toMatchObject({ is_error: true });
+  });
+
+  it("neutralizes Markdown control syntax in result labels", () => {
+    const t = "thread-labels";
+    const thread = createThread([createToolMessage(t, [{
+      toolCallId: "c", name: "x\n# heading [link](https://bad) `code`\u0000",
+      content: [], resultId: "r", terminalStatus: "unknown",
+      authorityDecision: { decision: "denied", authority: "a\n# authority", policyId: "p\n[link](x)" },
+    }])]);
+    const markdown = exportToMarkdown(thread);
+    expect(markdown).not.toContain("\n# heading");
+    expect(markdown).not.toContain("[link](https://bad)");
+    expect(markdown).toContain("\\[link\\]\\(x\\)");
   });
 });

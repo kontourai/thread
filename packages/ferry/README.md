@@ -78,4 +78,10 @@ identity/status surface documented in their adapter headers; ChatGPT exports
 contain no byte-real tool-result mapping in the retained fixture and remain
 intentionally unmapped.
 
+The retained Claude Code, OpenCode, Kiro, and Pi fixtures prove their listed
+success forms but do not contain a byte-real failed tool result. Their error
+markers therefore remain `unknown` rather than being promoted from composed
+examples; adding an error mapping requires an observed writer record and its
+fixture provenance.
+
 License: Apache-2.0

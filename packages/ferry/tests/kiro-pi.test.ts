@@ -43,6 +43,10 @@ describe("kiro importer", () => {
     expect(tool.toolResults[0]?.resultId).toMatch(/^ferry:kiro:sha256:[a-f0-9]{64}$/);
     expect(tool.toolResults[0]?.terminalStatus).toBe("success");
     expect(tool.toolResults[0]?.isError).toBe(false);
+    expect(tool.toolResults[0]?.correlations).toEqual([
+      { namespace: "kiro", kind: "session", id: "62001838-138c-4fc3-b5c5-ced67a614d57" },
+      { namespace: "kiro", kind: "message", id: "ed08a30a-7d48-4f99-aa88-d9bbb5e4cccc" },
+    ]);
   });
 
   it("skips compaction snapshots entirely", () => {
@@ -124,6 +128,10 @@ describe("pi importer", () => {
     expect(tool.toolResults[0]?.resultId).toMatch(/^ferry:pi:sha256:[a-f0-9]{64}$/);
     expect(tool.toolResults[0]?.terminalStatus).toBe("success");
     expect(tool.toolResults[0]?.isError).toBe(false);
+    expect(tool.toolResults[0]?.correlations).toEqual([
+      { namespace: "pi", kind: "session", id: "019de3fe-13d5-730a-a9b6-cfce85558fff" },
+      { namespace: "pi", kind: "message", id: "msg-t1" },
+    ]);
 
     const final = thread.messages[3];
     if (final?.role !== "assistant") throw new Error("expected assistant");
