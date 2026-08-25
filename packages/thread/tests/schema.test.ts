@@ -15,6 +15,7 @@ import {
   isUserMessage,
   Message,
   projectToolResult,
+  SafeToolResultProjection,
   Thread,
   ToolResult,
   THREAD_SCHEMA_VERSION,
@@ -153,6 +154,7 @@ describe("tool result identity", () => {
       }),
     ).toThrow();
     expect(() => ToolResult.parse({ ...identified("success"), isError: true })).toThrow();
+    expect(() => ToolResult.parse({ ...identified("cancelled"), isError: true })).toThrow();
     expect(() => ToolResult.parse({ ...identified("error"), isError: false })).toThrow();
   });
 
@@ -181,6 +183,35 @@ describe("tool result identity", () => {
       ToolResult.parse({
         ...identified("unknown"),
         correlations: [{ namespace: "x".repeat(4097), kind: "event", id: "event-1" }],
+      }),
+    ).toThrow();
+    expect(() =>
+      ToolResult.parse({ ...identified("unknown"), resultId: "\ud800" }),
+    ).toThrow();
+    expect(() =>
+      ToolResult.parse({
+        ...identified("unknown"),
+        correlations: [{ namespace: "source", kind: "event", id: "\ud800" }],
+      }),
+    ).toThrow();
+  });
+
+  it("uses collision-free tuples to distinguish correlations containing NUL", () => {
+    const distinct = ToolResult.parse({
+      ...identified("unknown"),
+      correlations: [
+        { namespace: "a\u0000event", kind: "message", id: "id" },
+        { namespace: "a", kind: "event", id: "message\u0000id" },
+      ],
+    });
+    expect(distinct.correlations).toHaveLength(2);
+    expect(() =>
+      ToolResult.parse({
+        ...identified("unknown"),
+        correlations: [
+          { namespace: "source", kind: "event", id: "event-1" },
+          { namespace: "source", kind: "event", id: "event-1" },
+        ],
       }),
     ).toThrow();
   });
@@ -243,6 +274,9 @@ describe("tool result identity", () => {
     expect(JSON.stringify(projected)).not.toContain("call-1");
     expect(JSON.stringify(projected)).not.toContain("private.example");
     expect(JSON.stringify(projected)).not.toContain("file:///private.txt");
+    if (projected.state === "available") {
+      expect(SafeToolResultProjection.parse(projected.result)).toEqual(projected.result);
+    }
   });
 
   it("bounds projection parts and text bytes without splitting emoji", () => {
@@ -262,6 +296,103 @@ describe("tool result identity", () => {
     expect(projected.result.truncated).toBe(true);
     expect(projected.result.omittedParts).toBe(1);
     expect(projected.result.omittedTextBytes).toBe(217);
+  });
+
+  it("normalizes projection text, rejects lone surrogates, and bounds media types", () => {
+    const normalized = projectToolResult(
+      ToolResult.parse({
+        ...identified("success"),
+        content: [{ type: "text", text: "e\u0301" }],
+      }),
+    );
+    expect(normalized).toEqual({
+      state: "available",
+      result: expect.objectContaining({ content: [{ type: "text", text: "é" }] }),
+    });
+    expect(() =>
+      projectToolResult(
+        ToolResult.parse({
+          ...identified("success"),
+          content: [{ type: "text", text: "\ud800" }],
+        }),
+      ),
+    ).toThrow(/well-formed Unicode/);
+
+    const media = projectToolResult(
+      ToolResult.parse({
+        ...identified("success"),
+        content: [{ type: "image", data: "private", mediaType: "m".repeat(70_000) }],
+      }),
+    );
+    expect(media).toEqual({
+      state: "available",
+      result: expect.objectContaining({ content: [{ type: "image", mediaType: "m".repeat(256) }] }),
+    });
+  });
+
+  it("makes the exported safe projection schema enforce direct input bounds", () => {
+    const safe = {
+      resultId: "result-safe",
+      name: "tool",
+      terminalStatus: "success" as const,
+      content: [{ type: "text" as const, text: "ok" }],
+      truncated: false,
+      omittedParts: 0,
+      omittedTextBytes: 0,
+    };
+    expect(SafeToolResultProjection.parse(safe)).toEqual(safe);
+    expect(() =>
+      SafeToolResultProjection.parse({
+        ...safe,
+        content: [{ type: "image", mediaType: "m".repeat(70_000) }],
+      }),
+    ).toThrow();
+    expect(() =>
+      SafeToolResultProjection.parse({
+        ...safe,
+        content: [{ type: "text", text: "a".repeat(65_537) }],
+      }),
+    ).toThrow();
+    expect(() => SafeToolResultProjection.parse({ ...safe, truncated: true })).toThrow();
+    expect(() =>
+      SafeToolResultProjection.parse({ ...safe, omittedTextBytes: 1 }),
+    ).toThrow();
+  });
+
+  it("enforces a total safe-projection payload budget independent of text", () => {
+    const maximumId = "x".repeat(4096);
+    const oversized = {
+      resultId: maximumId,
+      name: "tool",
+      terminalStatus: "unknown" as const,
+      authorityDecision: { decision: "denied" as const, authority: maximumId, policyId: maximumId },
+      correlations: Array.from({ length: 16 }, (_, index) => ({
+        namespace: `${index}`.padEnd(4096, "n"),
+        kind: "event" as const,
+        id: maximumId,
+      })),
+      content: [{ type: "text" as const, text: "a".repeat(65_536) }],
+      truncated: false,
+      omittedParts: 0,
+      omittedTextBytes: 0,
+    };
+    expect(() => SafeToolResultProjection.parse(oversized)).toThrow();
+
+    const projected = projectToolResult(
+      ToolResult.parse({
+        ...identified("unknown"),
+        resultId: maximumId,
+        authorityDecision: { decision: "denied", authority: maximumId, policyId: maximumId },
+        correlations: oversized.correlations,
+        content: [{ type: "text", text: "a".repeat(65_536) }],
+      }),
+    );
+    expect(projected.state).toBe("available");
+    if (projected.state === "available") {
+      expect(projected.result.content[0]).toEqual(expect.objectContaining({ type: "text" }));
+      expect(projected.result.truncated).toBe(true);
+      expect(SafeToolResultProjection.parse(projected.result)).toEqual(projected.result);
+    }
   });
 });
 
@@ -311,6 +442,28 @@ describe("json round trip", () => {
     };
     const thread = createThread([message], undefined, { id: "t", createdAt: 1, updatedAt: 1 });
     expect(threadFromJson(threadToJson(thread))).toEqual(thread);
+  });
+
+  it("rejects duplicate owner result IDs from factories and serialization", () => {
+    const messages = [
+      {
+        ...createToolMessage("t", [{ toolCallId: "call-1", name: "tool", content: [], resultId: "result-duplicate", terminalStatus: "success" }]),
+        timestamp: 1,
+      },
+      {
+        ...createToolMessage("t", [{ toolCallId: "call-2", name: "tool", content: [], resultId: "result-duplicate", terminalStatus: "unknown" }]),
+        timestamp: 2,
+      },
+    ];
+    expect(() => createThread(messages)).toThrow();
+    const handBuilt = {
+      schemaVersion: THREAD_SCHEMA_VERSION,
+      id: "t",
+      messages,
+      createdAt: 1,
+      updatedAt: 2,
+    } as Thread;
+    expect(() => threadToJson(handBuilt)).toThrow();
   });
 
   it("rejects structurally invalid thread JSON", () => {
