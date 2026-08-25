@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.6.0](https://github.com/kontourai/thread/compare/ferry-v0.5.0...ferry-v0.6.0) (2026-08-25)
+
+
+### Features
+
+* **thread:** publish safe assistant answer references ([1f3d927](https://github.com/kontourai/thread/commit/1f3d927f75d42b9c8aa5cc1ee21f747de0ec1d9a))
+
+
+### Fixes
+
+* **ferry:** preserve imported answer identity standing ([0669a21](https://github.com/kontourai/thread/commit/0669a2140ae1ab9d5fb4cdfbe926c011c7411872))
+* **thread:** harden answer reference projection ([9b6660a](https://github.com/kontourai/thread/commit/9b6660a73092717e514900e4abdf9afe8d3262d1))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @kontourai/thread bumped from ^0.4.0 to ^0.5.0
+
 ## [0.5.0](https://github.com/kontourai/thread/compare/ferry-v0.4.0...ferry-v0.5.0) (2026-08-25)
 
 
