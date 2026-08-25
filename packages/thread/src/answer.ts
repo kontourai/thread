@@ -107,17 +107,20 @@ export const parseThreadAnswerRef = (value: unknown): ThreadAnswerRef => ThreadA
  * data descriptors before giving the closed value to the schema.
  */
 export const isThreadAnswerRef = (value: unknown): value is ThreadAnswerRef => {
-  const record = ownSafeRecord(value);
-  if (!record) return false;
-  const fields = ["authority", "schemaVersion", "kind", "standing", "threadId", "messageId"] as const;
-  if (Object.keys(record).length !== fields.length || !fields.every((field) => Object.hasOwn(record, field))) return false;
-  const candidate: Record<string, unknown> = {};
-  for (const field of fields) {
-    const result = ownDataField(record, field);
-    if (result.state !== "value") return false;
-    candidate[field] = result.value;
-  }
   try {
+    // Keep every reflective operation in one fail-closed boundary.  Proxies
+    // can make a later ownKeys/descriptor operation throw even when an earlier
+    // one succeeded, so a partial descriptor inspection is never validation.
+    const record = ownSafeRecord(value);
+    if (!record) return false;
+    const fields = ["authority", "schemaVersion", "kind", "standing", "threadId", "messageId"] as const;
+    if (Object.keys(record).length !== fields.length || !fields.every((field) => Object.hasOwn(record, field))) return false;
+    const candidate: Record<string, unknown> = {};
+    for (const field of fields) {
+      const result = ownDataField(record, field);
+      if (result.state !== "value") return false;
+      candidate[field] = result.value;
+    }
     return ThreadAnswerRef.safeParse(candidate).success;
   } catch {
     return false;

@@ -59,12 +59,22 @@ describe("ThreadAnswerRef", () => {
   it("is total and does not execute hostile ref getters or proxy gets", () => {
     let getterCalls = 0;
     const accessor = { ...ref, get threadId() { getterCalls += 1; throw new Error("must not run"); } };
-    const proxy = new Proxy({}, {
+    const descriptorProxy = new Proxy({ ...ref }, {
       get() { getterCalls += 1; throw new Error("must not run"); },
       getOwnPropertyDescriptor() { throw new Error("descriptor trap"); },
     });
+    let ownKeysCalls = 0;
+    const secondOwnKeysProxy = new Proxy({ ...ref }, {
+      get() { getterCalls += 1; throw new Error("must not run"); },
+      ownKeys(target) {
+        ownKeysCalls += 1;
+        if (ownKeysCalls === 2) throw new Error("second ownKeys trap");
+        return Reflect.ownKeys(target);
+      },
+    });
     expect(isThreadAnswerRef(accessor)).toBe(false);
-    expect(isThreadAnswerRef(proxy)).toBe(false);
+    expect(isThreadAnswerRef(descriptorProxy)).toBe(false);
+    expect(isThreadAnswerRef(secondOwnKeysProxy)).toBe(false);
     expect(getterCalls).toBe(0);
   });
 
