@@ -33,6 +33,10 @@
  * - Tool RESULTS carry the name of their call: Codex records it only on the
  *   call, so the importer pairs them by `call_id`. `""` now means genuinely
  *   unpaired.
+ * - Result identity uses the source session plus response-item record ordinal
+ *   and result index. Output records expose no terminal standing, so all
+ *   identified Codex results are `unknown`; output text and call status are
+ *   never parsed for a result outcome.
  * - `reasoning.encrypted_content` is dropped; only summary text is kept.
  * - Codex `last_token_usage.input_tokens` includes cached reads (observed:
  *   98/98 cumulative-delta-consistent samples) and is normalized to exclusive
@@ -68,7 +72,7 @@ import type {
   TokenUsage,
 } from "@kontourai/thread";
 import { THREAD_SCHEMA_VERSION } from "@kontourai/thread";
-import { asRecord, parseTimestamp, toLines, tryParseJson, type JsonlInput } from "./shared.js";
+import { asRecord, deterministicToolResultId, parseTimestamp, toLines, tryParseJson, type JsonlInput } from "./shared.js";
 
 const RolloutLine = z
   .object({
@@ -94,10 +98,14 @@ interface CodexReducerState {
   announcedMessageCount?: number;
   syntheticId: number;
   sessionId?: string;
+  /** Session id actually present in session_meta; excludes the local fallback. */
+  observedSessionId?: string;
   cwd?: string;
   cliVersion?: string;
   provider?: string;
   currentModel?: string;
+  /** Only an actual turn_context.turn_id may correlate a result to a turn. */
+  currentTurnId?: string;
   importableItemCount: number;
   skippedLines: number;
   pending: { content: AssistantContent[]; timestamp: number; model?: string } | null;
@@ -114,6 +122,8 @@ interface CodexReducerState {
    * incremental importer serializes this state as JSON.
    */
   pendingToolNames?: Record<string, string>;
+  /** Source-record ordinal, retained so restored importers keep result ids stable. */
+  recordOrdinal?: number;
 }
 
 function codexThread(state: CodexReducerState): Thread {
@@ -163,11 +173,18 @@ function codexThread(state: CodexReducerState): Thread {
   };
 }
 
-function stepCodex(record: z.infer<typeof RolloutLine>, state: CodexReducerState): void {
+function stepCodex(
+  record: z.infer<typeof RolloutLine>,
+  state: CodexReducerState,
+  recordOrdinal: number,
+): void {
   const payload = asRecord(record.payload);
   if (!payload) { state.duplicateAgentMessageText = undefined; return; }
   if (record.type === "session_meta") {
-    if (typeof payload["id"] === "string") state.sessionId ??= payload["id"];
+    if (typeof payload["id"] === "string") {
+      state.observedSessionId ??= payload["id"];
+      state.sessionId ??= payload["id"];
+    }
     if (typeof payload["cwd"] === "string") state.cwd ??= payload["cwd"];
     if (typeof payload["cli_version"] === "string") state.cliVersion ??= payload["cli_version"];
     if (typeof payload["model_provider"] === "string") state.provider ??= payload["model_provider"];
@@ -175,6 +192,7 @@ function stepCodex(record: z.infer<typeof RolloutLine>, state: CodexReducerState
   }
   if (record.type === "turn_context") {
     if (typeof payload["model"] === "string") state.currentModel = payload["model"];
+    if (typeof payload["turn_id"] === "string") state.currentTurnId = payload["turn_id"];
     state.duplicateAgentMessageText = undefined; return;
   }
   // A source timestamp may be absent. Capture the observation time while
@@ -259,7 +277,26 @@ function stepCodex(record: z.infer<typeof RolloutLine>, state: CodexReducerState
     const pendingNames = (state.pendingToolNames ??= {});
     const resolvedName = pendingNames[callId] ?? "";
     delete pendingNames[callId];
-    state.messages.push({ id: nextId(), threadId, role: "tool", timestamp, toolResults: [{ toolCallId: callId, name: resolvedName, content: [{ type: "text", text: extractOutputText(payload["output"]) }] }] });
+    state.messages.push({
+      id: nextId(),
+      threadId,
+      role: "tool",
+      timestamp,
+      toolResults: [{
+        toolCallId: callId,
+        name: resolvedName,
+        content: [{ type: "text", text: extractOutputText(payload["output"]) }],
+        // The thread-scoped response-item ordinal is stable even when
+        // session_meta arrives later; reconciliation adds that source session.
+        resultId: deterministicToolResultId("codex", [`response-item:${recordOrdinal}`], 0),
+        // Codex response-item output records carry no result terminal status.
+        // In particular, never inspect output text or call state.
+        terminalStatus: "unknown",
+        ...(state.currentTurnId === undefined
+          ? {}
+          : { correlations: [{ namespace: "codex", kind: "turn" as const, id: state.currentTurnId }] }),
+      }],
+    });
   }
 }
 
@@ -380,6 +417,21 @@ function reconcileCodexStateMessageIds(state: CodexReducerState): void {
   }
 }
 
+/** Adds only source-recorded session correlation; never infers a turn by adjacency. */
+function reconcileCodexResultCorrelations(state: CodexReducerState): void {
+  if (state.observedSessionId === undefined) return;
+  for (const message of state.messages) {
+    if (message.role !== "tool") continue;
+    for (const result of message.toolResults) {
+      if (result.resultId === undefined) continue;
+      const session = { namespace: "codex", kind: "session" as const, id: state.observedSessionId };
+      if (!result.correlations?.some((item) => item.namespace === session.namespace && item.kind === session.kind && item.id === session.id)) {
+        result.correlations = [session, ...(result.correlations ?? [])];
+      }
+    }
+  }
+}
+
 /** JSON-safe checkpoint for a Codex incremental importer.
  *
  * Hosts pass complete JSONL lines only: ferry does not buffer partial bytes.
@@ -408,7 +460,7 @@ export function createCodexImporter(
   options: CodexImportOptions = {},
 ): CodexIncrementalImporter {
   return codexImporter({
-    format: "codex", messages: [], syntheticId: 0, importableItemCount: 0,
+    format: "codex", messages: [], syntheticId: 0, importableItemCount: 0, recordOrdinal: 0,
     skippedLines: 0, pending: null,
   }, options.onWarn);
 }
@@ -436,12 +488,15 @@ function codexImporter(
         try { raw = JSON.parse(line); } catch { skipped += 1; continue; }
         const parsed = RolloutLine.safeParse(raw);
         if (!parsed.success) { skipped += 1; continue; }
-        stepCodex(parsed.data, snapshot);
+        const recordOrdinal = (snapshot.recordOrdinal ?? 0) + 1;
+        snapshot.recordOrdinal = recordOrdinal;
+        stepCodex(parsed.data, snapshot, recordOrdinal);
       }
       if (skipped > 0) onWarn?.(`codex: skipped ${skipped} unparseable line(s)`);
       // Do not give a tailing host an id based on the provisional fallback.
       // A session id resolves all accumulated state messages together.
       reconcileCodexStateMessageIds(snapshot);
+      reconcileCodexResultCorrelations(snapshot);
       if (!snapshot.sessionId) return [];
       const announcements = snapshot.messages.slice(snapshot.announcedMessageCount ?? 0);
       snapshot.announcedMessageCount = snapshot.messages.length;
@@ -453,6 +508,7 @@ function codexImporter(
       // identity just as a session_meta id would be.
       snapshot.sessionId ??= "codex-session";
       reconcileCodexStateMessageIds(snapshot);
+      reconcileCodexResultCorrelations(snapshot);
       const announcements = snapshot.messages.slice(snapshot.announcedMessageCount ?? 0);
       snapshot.announcedMessageCount = snapshot.messages.length;
       return announcements;

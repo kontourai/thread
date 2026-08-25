@@ -57,6 +57,9 @@
  * - Per-item `message_id`s, `duration_ms`, `time_to_first_token_ms`, task
  *   lifecycle state and the `diagnostics`/`session_build` blocks have no
  *   canonical home and are not imported.
+ * - Tool-result identity uses the durable envelope id plus committed-batch
+ *   index. Muse's batch has no terminal-status field: JSON-looking result text
+ *   is not parsed, so every identified result is `unknown`.
  */
 
 import { z } from "zod";
@@ -70,7 +73,7 @@ import type {
   ToolResult,
 } from "@kontourai/thread";
 import { THREAD_SCHEMA_VERSION } from "@kontourai/thread";
-import { asRecord, tryParseJson } from "./shared.js";
+import { asRecord, deterministicToolResultId, tryParseJson } from "./shared.js";
 
 const MuseEvent = z
   .object({
@@ -239,9 +242,8 @@ export function importFromMuse(jsonContent: string, options: MuseImportOptions =
   }
   const exported = parsed.data;
 
-  const threadId =
-    exported.sessions.find((session) => typeof session.session_id === "string")?.session_id ??
-    "muse-session";
+  const sourceSessionId = exported.sessions.find((session) => typeof session.session_id === "string")?.session_id;
+  const threadId = sourceSessionId ?? "muse-session";
 
   const messages: Message[] = [];
   let syntheticId = 0;
@@ -456,13 +458,26 @@ export function importFromMuse(jsonContent: string, options: MuseImportOptions =
 
       case "tool_result_batch_committed": {
         const toolResults: ToolResult[] = [];
-        for (const result of run.results) {
+        for (const [batchIndex, result] of run.results.entries()) {
           const resultCallId = nonEmpty(result.tool_call_id);
           if (resultCallId === undefined) continue;
           toolResults.push({
             toolCallId: resultCallId,
             name: toolNames.get(resultCallId) ?? "",
             content: [{ type: "text", text: result.text ?? "" }],
+            ...(envelope.id === undefined
+              ? {}
+              : {
+                  resultId: deterministicToolResultId("muse", [envelope.id], batchIndex),
+                  // Result prose and embedded JSON do not declare terminal state.
+                  terminalStatus: "unknown",
+                  correlations: [
+                    ...(sourceSessionId === undefined
+                      ? []
+                      : [{ namespace: "muse", kind: "session" as const, id: sourceSessionId }]),
+                    { namespace: "muse", kind: "event" as const, id: envelope.id },
+                  ],
+                }),
           });
         }
         if (toolResults.length > 0) {

@@ -17,6 +17,10 @@
  * - `isMeta` user events (injected context, not user speech) are skipped.
  * - The `toolUseResult` sidecar (structured duplicate of tool_result content,
  *   often containing whole files) is not imported.
+ * - Result identity is derived from the observed session, event UUID (or
+ *   raw source-record occurrence), and block index. The retained byte-real
+ *   fixture has no error result, so `is_error: true` remains unknown; the
+ *   observed false/absence contract is success.
  * - Pricing and deduplication usage extras are retained in
  *   `metadata.claudeUsageExtras`; other provider-specific usage fields (such
  *   as `inference_geo`, `iterations`, and `speed`) are dropped.
@@ -43,7 +47,7 @@ import type {
   ToolResult,
 } from "@kontourai/thread";
 import { FinishReason, THREAD_SCHEMA_VERSION } from "@kontourai/thread";
-import { parseTimestamp, toLines, type JsonlInput } from "./shared.js";
+import { deterministicToolResultId, parseTimestamp, toLines, type JsonlInput } from "./shared.js";
 
 const ConversationEvent = z
   .object({
@@ -154,6 +158,8 @@ interface ClaudeReducerState {
   messages: Message[];
   assistantById: Record<string, number>;
   syntheticId: number;
+  /** Every non-blank source record, before filters; checkpointed for stable anchors. */
+  recordOrdinal: number;
   eventCount: number;
   skippedLines: number;
   sessionId?: string;
@@ -184,7 +190,7 @@ function claudeThread(state: ClaudeReducerState): Thread {
   };
 }
 
-function stepClaude(event: ConversationEvent, state: ClaudeReducerState): void {
+function stepClaude(event: ConversationEvent, state: ClaudeReducerState, recordOrdinal: number): void {
   const threadId = state.sessionId ?? "claude-code-session";
   const messages = state.messages;
   const nextId = (): string => `${threadId}:${++state.syntheticId}`;
@@ -197,7 +203,7 @@ function stepClaude(event: ConversationEvent, state: ClaudeReducerState): void {
     if (apiMessage.role === "user") {
       const blocks = typeof apiMessage.content === "string" ? [] : apiMessage.content;
       const toolResults: ToolResult[] = [];
-      for (const block of blocks) {
+      for (const [blockIndex, block] of blocks.entries()) {
         if (typeof block !== "object" || block === null) continue;
         const b = block as Record<string, unknown>;
         if (b["type"] === "tool_result" && typeof b["tool_use_id"] === "string") {
@@ -209,11 +215,39 @@ function stepClaude(event: ConversationEvent, state: ClaudeReducerState): void {
           const pendingNames = (state.pendingToolNames ??= {});
           const resolvedName = pendingNames[callId] ?? "";
           delete pendingNames[callId];
+          const sessionAnchor = event.sessionId ?? state.sessionId;
+          const eventAnchor = event.uuid ?? "record-without-uuid";
           toolResults.push({
             toolCallId: callId,
             name: resolvedName,
             content: contentPartsFromBlocks(b["content"]),
-            isError: typeof b["is_error"] === "boolean" ? b["is_error"] : undefined,
+            // Claude's observed tool_result contract defaults an absent
+            // is_error to false. This is source-format semantics, not an
+            // inference from result prose.
+            ...(b["is_error"] === false ? { isError: false } : {}),
+            ...(sessionAnchor === undefined
+              ? {}
+              : {
+                  resultId: deterministicToolResultId(
+                    "claude-code",
+                    [sessionAnchor, eventAnchor, `record:${recordOrdinal}`],
+                    blockIndex,
+                  ),
+                  terminalStatus: b["is_error"] === false || b["is_error"] === undefined
+                    ? "success"
+                    : "unknown",
+                  correlations: [
+                    { namespace: "claude-code", kind: "session" as const, id: sessionAnchor },
+                    ...(event.uuid === undefined
+                      ? []
+                      : [{ namespace: "claude-code", kind: "event" as const, id: event.uuid }]),
+                    {
+                      namespace: "claude-code",
+                      kind: "message" as const,
+                      id: apiMessage.id ?? event.uuid ?? `record:${recordOrdinal}`,
+                    },
+                  ],
+                }),
           });
         }
       }
@@ -389,7 +423,7 @@ export function createClaudeCodeImporter(
   return claudeImporter({
     format: "claude-code",
     includeSidechains: options.includeSidechains === true,
-    messages: [], assistantById: {}, syntheticId: 0, eventCount: 0, skippedLines: 0,
+    messages: [], assistantById: {}, syntheticId: 0, recordOrdinal: 0, eventCount: 0, skippedLines: 0,
   }, options.onWarn);
 }
 
@@ -413,6 +447,7 @@ function claudeImporter(
       let skipped = 0;
       for (const line of lines) {
         if (!line.trim()) continue;
+        snapshot.recordOrdinal += 1;
         let raw: unknown;
         try { raw = JSON.parse(line); } catch { skipped += 1; continue; }
         if (typeof raw !== "object" || raw === null) continue;
@@ -436,7 +471,7 @@ function claudeImporter(
         snapshot.version ??= event.version;
         snapshot.gitBranch ??= event.gitBranch;
         snapshot.eventCount += 1;
-        stepClaude(event, snapshot);
+        stepClaude(event, snapshot, snapshot.recordOrdinal);
       }
       if (skipped > 0) onWarn?.(`claude-code: skipped ${skipped} unparseable or unrecognized conversation line(s)`);
       return snapshot.messages.slice(start);

@@ -102,6 +102,14 @@ describe("muse importer — multi-turn session", () => {
     });
     // muse's committed batch carries no error flag; nothing is invented.
     expect(tool.toolResults[0]?.isError).toBeUndefined();
+    expect(tool.toolResults[0]?.resultId).toMatch(/^ferry:muse:sha256:[a-f0-9]{64}$/);
+    // Even though this particular output is JSON with success:true, Muse's
+    // committed batch does not declare terminal standing.
+    expect(tool.toolResults[0]?.terminalStatus).toBe("unknown");
+    expect(tool.toolResults[0]?.correlations).toEqual([
+      { namespace: "muse", kind: "session", id: "1023465b-9491-4a39-b8e3-111e73b61c50" },
+      { namespace: "muse", kind: "event", id: "400ed043-7f27-4bf2-8f7d-3e2f2cf40fea" },
+    ]);
   });
 
   it("does not double-count tool uses from muse's internal task lifecycle", () => {
@@ -304,6 +312,19 @@ describe("muse importer — tool-calling session", () => {
 
   it("round-trips through canonical thread JSON", () => {
     expect(threadFromJson(threadToJson(thread))).toEqual(thread);
+  });
+});
+
+describe("muse result correlations", () => {
+  it("keeps the envelope event correlation without a session record", () => {
+    const document = JSON.parse(fixture(CHAT)) as { sessions: unknown[] };
+    document.sessions = [];
+    const thread = importFromMuse(JSON.stringify(document));
+    const message = thread.messages.find((item) => item.role === "tool");
+    if (message?.role !== "tool") throw new Error("expected tool");
+    expect(message.toolResults[0]?.correlations).toEqual([
+      { namespace: "muse", kind: "event", id: "400ed043-7f27-4bf2-8f7d-3e2f2cf40fea" },
+    ]);
   });
 });
 

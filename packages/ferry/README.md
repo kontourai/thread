@@ -26,10 +26,12 @@ directory. Each row carries the dimensions the schema keeps in different
 places — `source`/`sourceVersion`/`cwd`/`gitBranch` from the thread,
 `model`/`provider` from the owning assistant message, the tool's name and raw
 `arguments`, `parsedArguments` when the source supplied structure, `derived`
-for importer heuristics, and `isError`/`resultChars` joined from the matching
-`ToolResult` by `toolCallId`. Result columns are ABSENT for an unpaired call:
+for importer heuristics, and `isError`/`toolResultId`/`resultStatus`/`resultChars`
+joined from the matching `ToolResult` by `toolCallId`. Result columns are ABSENT for an unpaired call:
 a missing result is not a successful one, and `resultChars` counts result
-TEXT only, so a result carrying just an image reads as 0.
+TEXT only, so a result carrying just an image reads as 0. An observed result
+with unknown standing leaves `isError` absent rather than being fabricated as
+`false`; its `resultStatus` remains `unknown`.
 
 Unlike `convert`/`usage`, a bad input is warned about and skipped rather than
 aborting the run: **exit 0** means every input was read, **2** means the run
@@ -67,5 +69,19 @@ occurrences) rather than an array (6 occurrences, none of them JSON-parseable
 single-quoted and backtick variants (1,009 / 3,472) and two `apply_patch`
 payloads, one of which contains `tools.map(` in its diffed source because
 that shape defeated an earlier gate.
+
+Tool-result identity is deterministic and namespaced (`ferry:<adapter>:sha256:…`),
+computed only from source record anchors and a source result index. It never
+uses a call id, output text, timestamp, or prose-derived result status. Claude
+Code, Codex, OpenCode, Kiro, Pi, and Muse imports capture the observed
+identity/status surface documented in their adapter headers; ChatGPT exports
+contain no byte-real tool-result mapping in the retained fixture and remain
+intentionally unmapped.
+
+The retained Claude Code, OpenCode, Kiro, and Pi fixtures prove their listed
+success forms but do not contain a byte-real failed tool result. Their error
+markers therefore remain `unknown` rather than being promoted from composed
+examples; adding an error mapping requires an observed writer record and its
+fixture provenance.
 
 License: Apache-2.0

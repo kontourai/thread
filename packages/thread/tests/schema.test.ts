@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AssistantMessage,
+  createToolResult,
   createAssistantMessage,
   createThread,
   createToolMessage,
@@ -9,10 +10,14 @@ import {
   getTextContent,
   getToolCalls,
   isAssistantMessage,
+  isIdentifiedToolResult,
   isToolMessage,
   isUserMessage,
   Message,
+  projectToolResult,
+  SafeToolResultProjection,
   Thread,
+  ToolResult,
   THREAD_SCHEMA_VERSION,
   threadFromJson,
   threadToJson,
@@ -89,6 +94,435 @@ describe("factories", () => {
   });
 });
 
+describe("tool result identity", () => {
+  const legacy = {
+    toolCallId: "call-1",
+    name: "read_file",
+    content: [{ type: "text" as const, text: "stored exactly" }],
+  };
+
+  const identified = (terminalStatus: "success" | "error" | "cancelled" | "unknown") => ({
+    ...legacy,
+    resultId: `result-${terminalStatus}`,
+    terminalStatus,
+  });
+
+  it("keeps legacy results valid but makes them unavailable for dereference", () => {
+    const result = ToolResult.parse(legacy);
+    expect(isIdentifiedToolResult(result)).toBe(false);
+    expect(projectToolResult(result)).toEqual({
+      state: "unavailable",
+      reason: "identity-not-captured",
+    });
+  });
+
+  it("accepts every owner-issued terminal status", () => {
+    for (const status of ["success", "error", "cancelled", "unknown"] as const) {
+      const result = ToolResult.parse(identified(status));
+      expect(isIdentifiedToolResult(result)).toBe(true);
+      expect(result.terminalStatus).toBe(status);
+    }
+  });
+
+  it("requires result identity and status together without generating either", () => {
+    expect(() => ToolResult.parse({ ...legacy, resultId: "result-1" })).toThrow();
+    expect(() => ToolResult.parse({ ...legacy, terminalStatus: "success" })).toThrow();
+    expect(() =>
+      createToolResult({ ...legacy, resultId: "result-1" } as never),
+    ).toThrow();
+
+    const result = createToolResult({ ...identified("cancelled") });
+    expect(result.resultId).toBe("result-cancelled");
+    expect(result.terminalStatus).toBe("cancelled");
+  });
+
+  it("enforces identified-result invariants", () => {
+    expect(() => ToolResult.parse({ ...identified("success"), resultId: "call-1" })).toThrow();
+    expect(() =>
+      ToolResult.parse({ ...legacy, authorityDecision: { decision: "denied", authority: "policy" } }),
+    ).toThrow();
+    expect(() =>
+      ToolResult.parse({
+        ...legacy,
+        correlations: [{ namespace: "source", kind: "event", id: "event-1" }],
+      }),
+    ).toThrow();
+    expect(() =>
+      ToolResult.parse({
+        ...identified("success"),
+        authorityDecision: { decision: "denied", authority: "policy" },
+      }),
+    ).toThrow();
+    expect(() => ToolResult.parse({ ...identified("success"), isError: true })).toThrow();
+    expect(() => ToolResult.parse({ ...identified("cancelled"), isError: true })).toThrow();
+    expect(() => ToolResult.parse({ ...identified("error"), isError: false })).toThrow();
+  });
+
+  it("bounds and deduplicates correlations", () => {
+    const correlation = { namespace: "source", kind: "event" as const, id: "event-1" };
+    expect(() =>
+      ToolResult.parse({ ...identified("unknown"), correlations: [correlation, correlation] }),
+    ).toThrow();
+    expect(() =>
+      ToolResult.parse({
+        ...identified("unknown"),
+        correlations: Array.from({ length: 17 }, (_, index) => ({
+          namespace: "source",
+          kind: "event" as const,
+          id: `event-${index}`,
+        })),
+      }),
+    ).toThrow();
+    expect(() =>
+      ToolResult.parse({
+        ...identified("unknown"),
+        resultId: "x".repeat(4097),
+      }),
+    ).toThrow();
+    expect(() =>
+      ToolResult.parse({
+        ...identified("unknown"),
+        correlations: [{ namespace: "x".repeat(4097), kind: "event", id: "event-1" }],
+      }),
+    ).toThrow();
+    expect(() =>
+      ToolResult.parse({ ...identified("unknown"), resultId: "\ud800" }),
+    ).toThrow();
+    expect(() =>
+      ToolResult.parse({
+        ...identified("unknown"),
+        correlations: [{ namespace: "source", kind: "event", id: "\ud800" }],
+      }),
+    ).toThrow();
+  });
+
+  it("uses collision-free tuples to distinguish correlations containing NUL", () => {
+    const distinct = ToolResult.parse({
+      ...identified("unknown"),
+      correlations: [
+        { namespace: "a\u0000event", kind: "message", id: "id" },
+        { namespace: "a", kind: "event", id: "message\u0000id" },
+      ],
+    });
+    expect(distinct.correlations).toHaveLength(2);
+    expect(() =>
+      ToolResult.parse({
+        ...identified("unknown"),
+        correlations: [
+          { namespace: "source", kind: "event", id: "event-1" },
+          { namespace: "source", kind: "event", id: "event-1" },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it("rejects a result ID reused across tool messages in one thread", () => {
+    const first = {
+      ...createToolMessage("t", [{ ...identified("success"), resultId: "result-shared" }]),
+      timestamp: 1,
+    };
+    const second = {
+      ...createToolMessage("t", [{ ...identified("cancelled"), resultId: "result-shared" }]),
+      timestamp: 2,
+    };
+    expect(() =>
+      Thread.parse({ id: "t", messages: [first, second], createdAt: 1, updatedAt: 2 }),
+    ).toThrow();
+  });
+
+  it("projects identified results without exposing executable or payload-bearing data", () => {
+    const result = ToolResult.parse({
+      toolCallId: "call-1",
+      resultId: "result-1",
+      terminalStatus: "error",
+      name: "x".repeat(300),
+      isError: true,
+      authorityDecision: { decision: "denied", authority: "station", policyId: "policy-7" },
+      correlations: [{ namespace: "station", kind: "turn", id: "turn-4" }],
+      structuredResult: { internalValue: "do-not-project" },
+      content: [
+        { type: "text", text: "visible", annotations: { sourceUrl: "https://private.example" } },
+        { type: "image", data: "data:image/png;base64,private", mediaType: "image/png" },
+        {
+          type: "file",
+          name: "../private.txt",
+          mediaType: "text/plain",
+          data: "file:///private.txt",
+          size: 7,
+        },
+      ],
+    });
+    const projected = projectToolResult(result);
+    expect(projected).toEqual({
+      state: "available",
+      result: {
+        resultId: "result-1",
+        name: "x".repeat(256),
+        terminalStatus: "error",
+        authorityDecision: { decision: "denied", authority: "station", policyId: "policy-7" },
+        correlations: [{ namespace: "station", kind: "turn", id: "turn-4" }],
+        content: [
+          { type: "text", text: "visible" },
+          { type: "image", mediaType: "image/png" },
+          { type: "file", name: "file", mediaType: "text/plain", size: 7 },
+        ],
+        truncated: true,
+        omittedParts: 0,
+        omittedTextBytes: 0,
+        omittedMetadataBytes: 58,
+      },
+    });
+    expect(JSON.stringify(projected)).not.toContain("call-1");
+    expect(JSON.stringify(projected)).not.toContain("private.example");
+    expect(JSON.stringify(projected)).not.toContain("file:///private.txt");
+    if (projected.state === "available") {
+      expect(SafeToolResultProjection.parse(projected.result)).toEqual(projected.result);
+    }
+  });
+
+  it("bounds projection parts and text bytes without splitting emoji", () => {
+    const oversizedText = `${"a".repeat(65535)}😀`;
+    const result = ToolResult.parse({
+      ...identified("unknown"),
+      content: [
+        { type: "text", text: oversizedText },
+        ...Array.from({ length: 32 }, (_, index) => ({ type: "text" as const, text: `tail-${index}` })),
+      ],
+    });
+    const projected = projectToolResult(result);
+    expect(projected.state).toBe("available");
+    if (projected.state !== "available") return;
+    expect(projected.result.content).toHaveLength(32);
+    expect(projected.result.content[0]).toEqual({ type: "text", text: "a".repeat(65535) });
+    expect(projected.result.truncated).toBe(true);
+    expect(projected.result.omittedParts).toBe(1);
+    expect(projected.result.omittedTextBytes).toBe(217);
+    expect(projected.result.omittedMetadataBytes).toBe(0);
+  });
+
+  it("preserves well-formed source scalars, reports corruption, and bounds media types", () => {
+    const preserved = projectToolResult(
+      ToolResult.parse({
+        ...identified("success"),
+        content: [{ type: "text", text: "e\u0301" }],
+      }),
+    );
+    expect(preserved).toEqual({
+      state: "available",
+      result: expect.objectContaining({ content: [{ type: "text", text: "e\u0301" }] }),
+    });
+    expect(
+      projectToolResult(
+        ToolResult.parse({
+          ...identified("success"),
+          content: [{ type: "text", text: "\ud800" }],
+        }),
+      ),
+    ).toEqual({ state: "unavailable", reason: "corrupt-content" });
+    expect(
+      projectToolResult(
+        ToolResult.parse({ ...legacy, name: "\ud800", content: [{ type: "text", text: "ok" }] }),
+      ),
+    ).toEqual({ state: "unavailable", reason: "identity-not-captured" });
+    expect(
+      projectToolResult(
+        ToolResult.parse({ ...identified("success"), name: "\ud800" }),
+      ),
+    ).toEqual({ state: "unavailable", reason: "corrupt-content" });
+
+    const media = projectToolResult(
+      ToolResult.parse({
+        ...identified("success"),
+        content: [{ type: "image", data: "private", mediaType: "m".repeat(70_000) }],
+      }),
+    );
+    expect(media).toEqual({
+      state: "available",
+      result: expect.objectContaining({
+        content: [{ type: "image", mediaType: "application/octet-stream" }],
+        truncated: true,
+        omittedMetadataBytes: 70_000,
+      }),
+    });
+
+    const unsafeFile = projectToolResult(
+      ToolResult.parse({
+        ...identified("success"),
+        content: [
+          { type: "file", name: "../secret", mediaType: "file:///secret", data: "private" },
+        ],
+      }),
+    );
+    expect(unsafeFile).toEqual({
+      state: "available",
+      result: expect.objectContaining({
+        content: [{ type: "file", name: "file", mediaType: "application/octet-stream" }],
+        truncated: true,
+        omittedMetadataBytes: "../secret".length + "file:///secret".length,
+      }),
+    });
+
+    const longMime = `application/${"x".repeat(300)}`;
+    const truncatedMime = projectToolResult(
+      ToolResult.parse({
+        ...identified("success"),
+        content: [{ type: "image", data: "private", mediaType: longMime }],
+      }),
+    );
+    expect(truncatedMime).toEqual({
+      state: "available",
+      result: expect.objectContaining({
+        content: [{ type: "image", mediaType: longMime.slice(0, 256) }],
+        omittedMetadataBytes: longMime.length - 256,
+        truncated: true,
+      }),
+    });
+  });
+
+  it("makes the exported safe projection schema enforce direct input bounds", () => {
+    const safe = {
+      resultId: "result-safe",
+      name: "tool",
+      terminalStatus: "success" as const,
+      content: [{ type: "text" as const, text: "ok" }],
+      truncated: false,
+      omittedParts: 0,
+      omittedTextBytes: 0,
+      omittedMetadataBytes: 0,
+    };
+    expect(SafeToolResultProjection.parse(safe)).toEqual(safe);
+    expect(
+      SafeToolResultProjection.parse({
+        ...safe,
+        content: [{ type: "text", text: "e\u0301" }],
+      }),
+    ).toEqual({ ...safe, content: [{ type: "text", text: "e\u0301" }] });
+    expect(() =>
+      SafeToolResultProjection.parse({
+        ...safe,
+        content: [{ type: "image", mediaType: "m".repeat(70_000) }],
+      }),
+    ).toThrow();
+    expect(() =>
+      SafeToolResultProjection.parse({
+        ...safe,
+        content: [{ type: "text", text: "a".repeat(65_537) }],
+      }),
+    ).toThrow();
+    expect(() => SafeToolResultProjection.parse({ ...safe, truncated: true })).toThrow();
+    expect(() =>
+      SafeToolResultProjection.parse({ ...safe, omittedTextBytes: 1 }),
+    ).toThrow();
+    expect(() =>
+      SafeToolResultProjection.parse({ ...safe, omittedMetadataBytes: 1 }),
+    ).toThrow();
+    expect(() =>
+      SafeToolResultProjection.parse({
+        ...safe,
+        authorityDecision: { decision: "denied", authority: "a".repeat(257) },
+      }),
+    ).toThrow();
+    expect(() =>
+      SafeToolResultProjection.parse({
+        ...safe,
+        correlations: [{ namespace: "source", kind: "event", id: "i".repeat(257) }],
+      }),
+    ).toThrow();
+    expect(
+      SafeToolResultProjection.parse({
+        ...safe,
+        content: [{ type: "image", mediaType: "application/vnd.api+json" }],
+      }),
+    ).toEqual({ ...safe, content: [{ type: "image", mediaType: "application/vnd.api+json" }] });
+    for (const name of ["../secret", "/absolute", "C:\\windows", "bad\u0000name", ".", ".."]) {
+      expect(() =>
+        SafeToolResultProjection.parse({
+          ...safe,
+          content: [{ type: "file", name, mediaType: "text/plain" }],
+        }),
+      ).toThrow();
+    }
+    for (const mediaType of [
+      "file:///secret",
+      "https://example.test/x",
+      "data:text/plain,secret",
+      "file/plain",
+      "http/plain",
+      "data/plain",
+    ]) {
+      expect(() =>
+        SafeToolResultProjection.parse({
+          ...safe,
+          content: [{ type: "image", mediaType }],
+        }),
+      ).toThrow();
+    }
+  });
+
+  it("counts a truncated correlation collision as one dropped source tuple", () => {
+    const projected = projectToolResult(
+      ToolResult.parse({
+        ...identified("unknown"),
+        correlations: [
+          { namespace: "n".repeat(256), kind: "event", id: "id" },
+          { namespace: `${"n".repeat(256)}x`, kind: "event", id: "id" },
+        ],
+      }),
+    );
+    expect(projected).toEqual({
+      state: "available",
+      result: expect.objectContaining({
+        correlations: [{ namespace: "n".repeat(256), kind: "event", id: "id" }],
+        omittedMetadataBytes: 264,
+        truncated: true,
+      }),
+    });
+  });
+
+  it("enforces a total safe-projection payload budget independent of text", () => {
+    const maximumId = "x".repeat(4096);
+    const maximumMetadata = "m".repeat(256);
+    const oversized = {
+      resultId: maximumId,
+      name: "tool",
+      terminalStatus: "unknown" as const,
+      authorityDecision: { decision: "denied" as const, authority: maximumMetadata, policyId: maximumMetadata },
+      correlations: Array.from({ length: 16 }, (_, index) => ({
+        namespace: `${index}`.padEnd(256, "n"),
+        kind: "event" as const,
+        id: maximumMetadata,
+      })),
+      content: [{ type: "text" as const, text: "a".repeat(65_536) }],
+      truncated: false,
+      omittedParts: 0,
+      omittedTextBytes: 0,
+      omittedMetadataBytes: 0,
+    };
+    expect(() => SafeToolResultProjection.parse(oversized)).toThrow();
+
+    const projected = projectToolResult(
+      ToolResult.parse({
+        ...identified("unknown"),
+        resultId: maximumId,
+        authorityDecision: { decision: "denied", authority: maximumId, policyId: maximumId },
+        correlations: Array.from({ length: 16 }, (_, index) => ({
+          namespace: `${index}`.padEnd(4096, "n"),
+          kind: "event" as const,
+          id: maximumId,
+        })),
+        content: [{ type: "text", text: "a".repeat(65_536) }],
+      }),
+    );
+    expect(projected.state).toBe("available");
+    if (projected.state === "available") {
+      expect(projected.result.content[0]).toEqual(expect.objectContaining({ type: "text" }));
+      expect(projected.result.truncated).toBe(true);
+      expect(projected.result.omittedMetadataBytes).toBe(130_560);
+      expect(SafeToolResultProjection.parse(projected.result)).toEqual(projected.result);
+    }
+  });
+});
+
 describe("json round trip", () => {
   it("survives serialize → parse byte-stable", () => {
     const thread = createThread(
@@ -114,6 +548,67 @@ describe("json round trip", () => {
     const thread = { ...createThread([]), schemaVersion: undefined };
     const parsed = JSON.parse(threadToJson(thread));
     expect(parsed.schemaVersion).toBe(THREAD_SCHEMA_VERSION);
+  });
+
+  it("serializes the canonical parsed thread without undeclared fields", () => {
+    const handBuilt = {
+      ...createThread([createUserMessage("t", "question")]),
+      undeclaredThreadField: "do-not-serialize",
+      messages: [
+        {
+          ...createUserMessage("t", "question"),
+          undeclaredMessageField: "do-not-serialize",
+          content: [{ type: "text", text: "question", undeclaredPartField: "do-not-serialize" }],
+        },
+      ],
+    } as unknown as Thread;
+    const serialized = JSON.parse(threadToJson(handBuilt));
+    expect(serialized.undeclaredThreadField).toBeUndefined();
+    expect(serialized.messages[0].undeclaredMessageField).toBeUndefined();
+    expect(serialized.messages[0].content[0].undeclaredPartField).toBeUndefined();
+  });
+
+  it("round-trips identified result content without projection loss", () => {
+    const message = {
+      ...createToolMessage("t", [
+        {
+          toolCallId: "call-1",
+          resultId: "result-1",
+          terminalStatus: "success" as const,
+          name: "read",
+          content: [
+            { type: "text" as const, text: "verbatim", annotations: { trace: "kept" } },
+            { type: "image" as const, data: "data:image/png;base64,bytes", mediaType: "image/png" },
+          ],
+          structuredResult: { raw: { value: true } },
+        },
+      ]),
+      timestamp: 1,
+    };
+    const thread = createThread([message], undefined, { id: "t", createdAt: 1, updatedAt: 1 });
+    expect(threadFromJson(threadToJson(thread))).toEqual(thread);
+  });
+
+  it("rejects duplicate owner result IDs from factories and serialization", () => {
+    const messages = [
+      {
+        ...createToolMessage("t", [{ toolCallId: "call-1", name: "tool", content: [], resultId: "result-duplicate", terminalStatus: "success" }]),
+        timestamp: 1,
+      },
+      {
+        ...createToolMessage("t", [{ toolCallId: "call-2", name: "tool", content: [], resultId: "result-duplicate", terminalStatus: "unknown" }]),
+        timestamp: 2,
+      },
+    ];
+    expect(() => createThread(messages)).toThrow();
+    const handBuilt = {
+      schemaVersion: THREAD_SCHEMA_VERSION,
+      id: "t",
+      messages,
+      createdAt: 1,
+      updatedAt: 2,
+    } as Thread;
+    expect(() => threadToJson(handBuilt)).toThrow();
   });
 
   it("rejects structurally invalid thread JSON", () => {

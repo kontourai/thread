@@ -22,6 +22,9 @@
  *   prompt's time.
  * - `Compaction` snapshots are skipped (their messages duplicate history).
  * - Image byte arrays are imported as base64.
+ * - Tool-result identity uses source `message_id` plus part index. Explicit
+ *   `success` maps directly; no byte-real failure record is retained, so
+ *   `error` and every other/absent status remain `unknown`.
  */
 
 import { z } from "zod";
@@ -34,7 +37,7 @@ import type {
   ToolResult,
 } from "@kontourai/thread";
 import { THREAD_SCHEMA_VERSION } from "@kontourai/thread";
-import { asRecord, toLines, type JsonlInput } from "./shared.js";
+import { asRecord, deterministicToolResultId, toLines, type JsonlInput } from "./shared.js";
 
 // `version` is a string tag ("v1") in real transcripts; typing it loosely
 // keeps a future tag change from silently deleting every line.
@@ -115,7 +118,7 @@ export function importFromKiro(jsonlContent: JsonlInput, options: KiroImportOpti
       if (seconds !== undefined && seconds > 0) lastTimestamp = Math.round(seconds * 1000);
       const content: ContentPart[] = [];
       const toolResults: ToolResult[] = [];
-      for (const part of contentParts) {
+      for (const [partIndex, part] of contentParts.entries()) {
         const p = asRecord(part);
         if (!p) continue;
         if (p["kind"] === "text" && typeof p["data"] === "string") {
@@ -129,7 +132,7 @@ export function importFromKiro(jsonlContent: JsonlInput, options: KiroImportOpti
             content.push({ type: "image", data: base64, mediaType: `image/${format}` });
           }
         } else if (p["kind"] === "toolResult") {
-          const result = toToolResult(p["data"]);
+          const result = toToolResult(p["data"], options.sessionId, messageId, partIndex);
           if (result) toolResults.push(result);
         }
       }
@@ -153,7 +156,7 @@ export function importFromKiro(jsonlContent: JsonlInput, options: KiroImportOpti
       }
     } else if (kind === "AssistantMessage") {
       const content: AssistantContent[] = [];
-      for (const part of contentParts) {
+      for (const [partIndex, part] of contentParts.entries()) {
         const p = asRecord(part);
         if (!p) continue;
         if (p["kind"] === "text" && typeof p["data"] === "string") {
@@ -199,10 +202,10 @@ export function importFromKiro(jsonlContent: JsonlInput, options: KiroImportOpti
       }
     } else if (kind === "ToolResults") {
       const toolResults: ToolResult[] = [];
-      for (const part of contentParts) {
+      for (const [partIndex, part] of contentParts.entries()) {
         const p = asRecord(part);
         if (p?.["kind"] === "toolResult") {
-          const result = toToolResult(p["data"]);
+          const result = toToolResult(p["data"], options.sessionId, messageId, partIndex);
           if (result) toolResults.push(result);
         }
       }
@@ -238,14 +241,31 @@ export function importFromKiro(jsonlContent: JsonlInput, options: KiroImportOpti
   };
 }
 
-function toToolResult(data: unknown): ToolResult | null {
+function toToolResult(
+  data: unknown,
+  sourceSessionId: string | undefined,
+  messageId: string | undefined,
+  partIndex: number,
+): ToolResult | null {
   const d = asRecord(data);
   if (!d || typeof d["toolUseId"] !== "string") return null;
-  const status = typeof d["status"] === "string" ? d["status"] : undefined;
+  const status = d["status"] === "success" ? "success" : "unknown";
   return {
     toolCallId: d["toolUseId"],
     name: typeof d["name"] === "string" ? d["name"] : "",
     content: textFromResultParts(d["content"]),
-    isError: status === "error" ? true : undefined,
+    ...(status === "success" ? { isError: false } : {}),
+    ...(messageId === undefined
+      ? {}
+      : {
+          resultId: deterministicToolResultId("kiro", [messageId], partIndex),
+          terminalStatus: status,
+          correlations: [
+            ...(sourceSessionId === undefined
+              ? []
+              : [{ namespace: "kiro", kind: "session" as const, id: sourceSessionId }]),
+            { namespace: "kiro", kind: "message" as const, id: messageId },
+          ],
+        }),
   };
 }

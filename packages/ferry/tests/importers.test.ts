@@ -149,6 +149,21 @@ describe("claude-code importer", () => {
     expect(thread.updatedAt).toBe(Date.parse("2026-08-01T10:00:19.000Z"));
   });
 
+  it("records Claude result identity from source anchors, not call or output text", () => {
+    const result = thread.messages.find((message) => message.role === "tool");
+    if (result?.role !== "tool") throw new Error("expected tool result");
+    const first = result.toolResults[0]!;
+    expect(first.resultId).toMatch(/^ferry:claude-code:sha256:[a-f0-9]{64}$/);
+    expect(first.resultId).not.toBe(first.toolCallId);
+    expect(first.terminalStatus).toBe("success");
+    expect(first.isError).toBeUndefined();
+    expect(first.correlations).toEqual([
+      { namespace: "claude-code", kind: "session", id: "11111111-aaaa-bbbb-cccc-000000000001" },
+      { namespace: "claude-code", kind: "event", id: "uuid-user-2" },
+      { namespace: "claude-code", kind: "message", id: "uuid-user-2" },
+    ]);
+  });
+
   it("keeps sidechains when asked", () => {
     const withSidechains = importFromClaudeCode(fixture("claude-code-session.jsonl"), {
       includeSidechains: true,
@@ -406,6 +421,16 @@ describe("codex importer", () => {
     const outputs = thread.messages.filter((m) => m.role === "tool");
     expect(outputs[0]?.toolResults[0]?.toolCallId).toBe("call_alpha");
     expect(outputs[1]?.toolResults[0]?.toolCallId).toBe("call_beta");
+    for (const output of outputs) {
+      const result = output?.toolResults[0]!;
+      expect(result.resultId).toMatch(/^ferry:codex:sha256:[a-f0-9]{64}$/);
+      expect(result.terminalStatus).toBe("unknown");
+      expect(result.isError).toBeUndefined();
+    }
+    expect(outputs[0]?.toolResults[0]?.correlations).toEqual([
+      { namespace: "codex", kind: "session", id: "019f0000-1111-2222-3333-444444444444" },
+      { namespace: "codex", kind: "turn", id: "turn-1" },
+    ]);
   });
 
   it("keeps non-event inter-agent chatter skipped and encrypted reasoning out", () => {
@@ -757,6 +782,13 @@ describe("opencode importer", () => {
     expect(tool.toolResults[0]?.toolCallId).toBe("call_06d8469b26674bf7a0f80d15");
     expect(tool.toolResults[0]?.name).toBe("bash");
     expect(getToolResultText(tool.toolResults[0]?.content)).toContain("abc1234 [main]");
+    expect(tool.toolResults[0]?.terminalStatus).toBe("success");
+    expect(tool.toolResults[0]?.isError).toBe(false);
+    expect(tool.toolResults[0]?.correlations).toEqual([
+      { namespace: "opencode", kind: "session", id: "ses_0abc111defV0Example00001" },
+      { namespace: "opencode", kind: "message", id: "msg_asst_0001" },
+      { namespace: "opencode", kind: "result", id: "prt_0005" },
+    ]);
   });
 
   it("rejects non-opencode json", () => {
@@ -963,6 +995,84 @@ describe("claude-code tool result names (#38)", () => {
   });
 });
 
+describe("tool result identity anchors", () => {
+  it("keeps result ids stable across output prose and separates two results for one call", () => {
+    const source = (firstText: string) => [
+      '{"type":"assistant","uuid":"a1","sessionId":"s1","timestamp":"2026-08-01T10:00:00.000Z","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"c1","name":"shell","input":{}}]}}',
+      JSON.stringify({
+        type: "user",
+        uuid: "u1",
+        sessionId: "s1",
+        timestamp: "2026-08-01T10:00:01.000Z",
+        message: {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "c1", content: firstText },
+            { type: "tool_result", tool_use_id: "c1", content: "second", is_error: true },
+          ],
+        },
+      }),
+    ].join("\n");
+    const first = importFromClaudeCode(source("first"));
+    const rewritten = importFromClaudeCode(source("rewritten prose"));
+    const firstResults = first.messages.find((message) => message.role === "tool");
+    const rewrittenResults = rewritten.messages.find((message) => message.role === "tool");
+    if (firstResults?.role !== "tool" || rewrittenResults?.role !== "tool") {
+      throw new Error("expected tool results");
+    }
+    expect(firstResults.toolResults).toHaveLength(2);
+    expect(new Set(firstResults.toolResults.map((result) => result.resultId)).size).toBe(2);
+    expect(firstResults.toolResults.map((result) => result.resultId)).toEqual(
+      rewrittenResults.toolResults.map((result) => result.resultId),
+    );
+    expect(firstResults.toolResults.map((result) => result.terminalStatus)).toEqual(["success", "unknown"]);
+  });
+
+  it("uses raw record occurrence across restores and filters for repeated Claude UUIDs", () => {
+    const source = [
+      '{"type":"assistant","uuid":"a","sessionId":"s","timestamp":"2026-08-01T00:00:00Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"c","name":"x","input":{}}]}}',
+      '{"type":"user","uuid":"same","sessionId":"s","timestamp":"2026-08-01T00:00:01Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"c","content":"one"}]}}',
+      '{"type":"user","uuid":"meta","sessionId":"s","isMeta":true,"timestamp":"2026-08-01T00:00:02Z","message":{"role":"user","content":"ignored"}}',
+      '{"type":"user","uuid":"side","sessionId":"s","isSidechain":true,"timestamp":"2026-08-01T00:00:03Z","message":{"role":"user","content":"ignored"}}',
+      '{"type":"user","uuid":"same","sessionId":"s","timestamp":"2026-08-01T00:00:04Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"c","content":"two"}]}}',
+    ].join("\n");
+    const ids = (thread: ReturnType<typeof importFromClaudeCode>) => thread.messages
+      .flatMap((message) => message.role === "tool" ? message.toolResults : [])
+      .map((result) => result.resultId);
+    const whole = importFromClaudeCode(source);
+    const incremental = createClaudeCodeImporter();
+    const lines = source.split("\n");
+    incremental.pushLines(lines.slice(0, 2));
+    const restored = restoreClaudeCodeImporter(incremental.state());
+    restored.pushLines(lines.slice(2));
+    expect(ids(restored.thread())).toEqual(ids(whole));
+    expect(new Set(ids(whole)).size).toBe(2);
+    expect(ids(importFromClaudeCode(source, { includeSidechains: true }))).toEqual(ids(whole));
+  });
+
+  it("backfills late Codex session correlation without changing its response-item identity", () => {
+    const source = [
+      '{"type":"response_item","timestamp":"2026-08-01T00:00:00Z","payload":{"type":"function_call_output","call_id":"c","output":"x"}}',
+      '{"type":"session_meta","payload":{"id":"late-session"}}',
+    ].join("\n");
+    const oneShot = importFromCodex(source);
+    const importer = createCodexImporter();
+    importer.pushLines([source.split("\n")[0]!]);
+    const restored = restoreCodexImporter(importer.state());
+    restored.pushLines([source.split("\n")[1]!]);
+    restored.finalize();
+    const result = (thread: ReturnType<typeof importFromCodex>) => thread.messages
+      .flatMap((message) => message.role === "tool" ? message.toolResults : [])[0]!;
+    expect(result(restored.thread()).resultId).toBe(result(oneShot).resultId);
+    expect(result(restored.thread()).correlations).toEqual([
+      { namespace: "codex", kind: "session", id: "late-session" },
+    ]);
+    const outputOnly = importFromCodex(source.split("\n")[0]!);
+    expect(result(outputOnly).correlations).toBeUndefined();
+    expect(outputOnly.id).toBe("codex-session");
+  });
+});
+
 describe("codex exec legibility (#32, #33, #38)", () => {
   const thread = importFromCodex(fixture("codex-exec-program.jsonl"));
   const calls = thread.messages.flatMap((m) =>
@@ -1105,4 +1215,3 @@ describe("empty-input errors are recognized as 'nothing to import' (#37 review)"
     }
   });
 });
-

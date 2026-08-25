@@ -15,6 +15,12 @@ export interface MarkdownOptions {
 
 const escapeYaml = (value: string): string => JSON.stringify(value);
 
+/** Inline labels must not open Markdown syntax or carry terminal controls outside fences. */
+const safeInlineLabel = (value: string): string =>
+  value
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/([\\`*_[\]()<>#])/g, "\\$1");
+
 /** A fence longer than any backtick run in the content, so tool output containing ``` cannot break out. */
 const fenceFor = (content: string): string => {
   const longest = content.match(/`+/g)?.reduce((max, run) => Math.max(max, run.length), 0) ?? 0;
@@ -84,9 +90,16 @@ export function exportToMarkdown(thread: Thread, options: MarkdownOptions = {}):
       }
     } else if (msg.role === "tool" && includeToolCalls) {
       for (const result of msg.toolResults) {
-        const label = result.name ? `${result.name} ` : "";
-        const status = result.isError ? " (error)" : "";
-        lines.push(`**← ${label}result${status}**`, "");
+        const label = result.name ? `${safeInlineLabel(result.name)} ` : "";
+        const status = result.terminalStatus === undefined ? "" : ` (status: ${result.terminalStatus})`;
+        const denied = result.authorityDecision === undefined
+          ? ""
+          : ` — Denied by ${safeInlineLabel(result.authorityDecision.authority)}${
+              result.authorityDecision.policyId === undefined
+                ? ""
+                : ` (policy: ${safeInlineLabel(result.authorityDecision.policyId)})`
+            }`;
+        lines.push(`**← ${label}result${status}${denied}**`, "");
         const text = result.content
           .map((c) => (c.type === "text" ? c.text : `[${c.type}]`))
           .join("\n");

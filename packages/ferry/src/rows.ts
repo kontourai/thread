@@ -31,8 +31,12 @@ export interface ToolCallRow {
   parsedArguments?: Record<string, unknown>;
   /** Importer-derived analysis about the call (heuristic; see the schema). */
   derived?: Record<string, unknown>;
-  /** True/false once a result was seen; absent when the call is unpaired. */
+  /** Source-declared true/false; absent for an unpaired or unknown result. */
   isError?: boolean;
+  /** Owner-issued identity for the matched result, when the importer captured it. */
+  toolResultId?: string;
+  /** Source-declared terminal standing for the matched result. */
+  resultStatus?: "success" | "error" | "cancelled" | "unknown";
   /**
    * Characters of result TEXT. Image and file result parts contribute 0, so
    * a row can read `resultChars: 0` for a result that was not empty — 126 of
@@ -107,7 +111,10 @@ export function toolCallRows(thread: Thread): ToolCallRow[] {
         arguments: call.arguments,
         ...(call.parsedArguments ? { parsedArguments: call.parsedArguments } : {}),
         ...(call.derived ? { derived: call.derived } : {}),
-        ...(result ? { isError: result.isError === true, resultChars: resultText(result) } : {}),
+        ...(result?.isError !== undefined ? { isError: result.isError } : {}),
+        ...(result?.resultId !== undefined ? { toolResultId: result.resultId } : {}),
+        ...(result?.terminalStatus !== undefined ? { resultStatus: result.terminalStatus } : {}),
+        ...(result ? { resultChars: resultText(result) } : {}),
       });
     }
   }
@@ -136,6 +143,8 @@ const CSV_COLUMNS = [
   "operation",
   "command",
   "isError",
+  "toolResultId",
+  "resultStatus",
   "resultChars",
   "cwd",
   "gitBranch",
@@ -194,6 +203,8 @@ export function formatRowCsv(row: ToolCallRow): string {
       operation: derived["operation"],
       command,
       isError: row.isError,
+      toolResultId: row.toolResultId,
+      resultStatus: row.resultStatus,
       resultChars: row.resultChars,
       cwd: row.cwd,
       gitBranch: row.gitBranch,

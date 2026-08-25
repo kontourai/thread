@@ -40,6 +40,13 @@ describe("kiro importer", () => {
     expect(tool.toolResults[0]?.toolCallId).toBe("toolu_bdrk_01Fixture000001");
     expect(tool.toolResults[0]?.content[0]?.type).toBe("text");
     expect(JSON.stringify(tool.toolResults[0]?.content)).toContain("retry.test.ts");
+    expect(tool.toolResults[0]?.resultId).toMatch(/^ferry:kiro:sha256:[a-f0-9]{64}$/);
+    expect(tool.toolResults[0]?.terminalStatus).toBe("success");
+    expect(tool.toolResults[0]?.isError).toBe(false);
+    expect(tool.toolResults[0]?.correlations).toEqual([
+      { namespace: "kiro", kind: "session", id: "62001838-138c-4fc3-b5c5-ced67a614d57" },
+      { namespace: "kiro", kind: "message", id: "ed08a30a-7d48-4f99-aa88-d9bbb5e4cccc" },
+    ]);
   });
 
   it("skips compaction snapshots entirely", () => {
@@ -69,6 +76,28 @@ describe("kiro importer", () => {
 
   it("throws when nothing is importable", () => {
     expect(() => importFromKiro('{"kind":"Compaction","data":{}}')).toThrow(/no importable/);
+  });
+
+  it("keeps an unrecognized explicit Kiro result status unknown", () => {
+    const thread = importFromKiro(
+      '{"version":"v1","kind":"ToolResults","data":{"message_id":"m1","content":[{"kind":"toolResult","data":{"toolUseId":"c1","content":[],"status":"pending"}}]}}',
+      { sessionId: "s1" },
+    );
+    const result = thread.messages[0];
+    if (result?.role !== "tool") throw new Error("expected tool");
+    expect(result.toolResults[0]).toMatchObject({ terminalStatus: "unknown" });
+    expect(result.toolResults[0]?.isError).toBeUndefined();
+  });
+
+  it("keeps Kiro message correlation when the caller did not supply a session", () => {
+    const thread = importFromKiro(
+      '{"version":"v1","kind":"ToolResults","data":{"message_id":"m1","content":[{"kind":"toolResult","data":{"toolUseId":"c1","content":[],"status":"pending"}}]}}',
+    );
+    const message = thread.messages[0];
+    if (message?.role !== "tool") throw new Error("expected tool");
+    expect(message.toolResults[0]?.correlations).toEqual([
+      { namespace: "kiro", kind: "message", id: "m1" },
+    ]);
   });
 });
 
@@ -107,6 +136,13 @@ describe("pi importer", () => {
     if (tool?.role !== "tool") throw new Error("expected tool");
     expect(tool.toolResults[0]?.toolCallId).toBe("call_pi_0001|fc_abc");
     expect(tool.toolResults[0]?.name).toBe("bash");
+    expect(tool.toolResults[0]?.resultId).toMatch(/^ferry:pi:sha256:[a-f0-9]{64}$/);
+    expect(tool.toolResults[0]?.terminalStatus).toBe("success");
+    expect(tool.toolResults[0]?.isError).toBe(false);
+    expect(tool.toolResults[0]?.correlations).toEqual([
+      { namespace: "pi", kind: "session", id: "019de3fe-13d5-730a-a9b6-cfce85558fff" },
+      { namespace: "pi", kind: "message", id: "msg-t1" },
+    ]);
 
     const final = thread.messages[3];
     if (final?.role !== "assistant") throw new Error("expected assistant");
@@ -134,6 +170,28 @@ describe("pi importer", () => {
     if (errored?.role !== "assistant") throw new Error("expected assistant");
     expect(errored.finishReason).toBe("error");
     expect(errored.metadata?.["errorMessage"]).toContain("server_is_overloaded");
+  });
+
+  it("keeps an absent Pi isError unknown", () => {
+    const thread = importFromPi([
+      '{"type":"session","id":"s1","version":3,"timestamp":"2026-08-01T09:00:00.000Z"}',
+      '{"type":"message","id":"r1","timestamp":"2026-08-01T09:00:01.000Z","message":{"role":"toolResult","toolCallId":"c1","toolName":"shell","content":[]}}',
+    ].join("\n"));
+    const result = thread.messages[0];
+    if (result?.role !== "tool") throw new Error("expected tool");
+    expect(result.toolResults[0]).toMatchObject({ terminalStatus: "unknown" });
+    expect(result.toolResults[0]?.isError).toBeUndefined();
+  });
+
+  it("keeps Pi outer record correlation when the session header is absent", () => {
+    const thread = importFromPi(
+      '{"type":"message","id":"r1","timestamp":"2026-08-01T09:00:01.000Z","message":{"role":"toolResult","toolCallId":"c1","toolName":"shell","content":[]}}',
+    );
+    const message = thread.messages[0];
+    if (message?.role !== "tool") throw new Error("expected tool");
+    expect(message.toolResults[0]?.correlations).toEqual([
+      { namespace: "pi", kind: "message", id: "r1" },
+    ]);
   });
 });
 

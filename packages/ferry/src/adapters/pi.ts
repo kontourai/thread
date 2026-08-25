@@ -19,6 +19,9 @@
  * - Messages are imported in file order (append order); `parentId` links are
  *   not re-walked.
  * - Non-text tool result content is flattened to text placeholders.
+ * - Tool-result identity uses the outer source message record id. `isError`
+ *   false maps to success; no byte-real failure record is retained, so true
+ *   and absent stay unknown.
  */
 
 import { z } from "zod";
@@ -31,7 +34,7 @@ import type {
   ThreadMetadata,
 } from "@kontourai/thread";
 import { THREAD_SCHEMA_VERSION } from "@kontourai/thread";
-import { asRecord, parseTimestamp, toLines, type JsonlInput } from "./shared.js";
+import { asRecord, deterministicToolResultId, parseTimestamp, toLines, type JsonlInput } from "./shared.js";
 
 const PiLine = z
   .object({
@@ -225,7 +228,21 @@ export function importFromPi(jsonlContent: JsonlInput, options: PiImportOptions 
             toolCallId: message["toolCallId"],
             name: typeof message["toolName"] === "string" ? message["toolName"] : "",
             content: text ? [{ type: "text", text }] : [],
-            isError: message["isError"] === true ? true : undefined,
+            ...(message["isError"] === false ? { isError: false } : {}),
+            ...(record.id === undefined
+              ? {}
+              : {
+                  resultId: deterministicToolResultId("pi", [record.id], 0),
+                  terminalStatus: message["isError"] === false
+                    ? "success"
+                    : "unknown",
+                  correlations: [
+                    ...(sessionId === undefined
+                      ? []
+                      : [{ namespace: "pi", kind: "session" as const, id: sessionId }]),
+                    { namespace: "pi", kind: "message" as const, id: record.id },
+                  ],
+                }),
           },
         ],
       });

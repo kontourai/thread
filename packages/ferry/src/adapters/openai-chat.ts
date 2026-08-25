@@ -6,6 +6,8 @@
  * - File parts and assistant image output are flattened to text placeholders.
  * - Non-text tool result content (images) is flattened to text placeholders.
  * - Usage, model and timestamps are not representable per-message.
+ * - Tool-result identity, terminal status, authority decisions, and source
+ *   correlations are not representable.
  * - A trailing tool call with no recorded result exports without a following
  *   `tool` message; replay requires supplying one.
  */

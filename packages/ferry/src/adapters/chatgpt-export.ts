@@ -11,7 +11,8 @@
  * `code` (imported as text), `thoughts` (imported as reasoning).
  * Known limitations (deliberate):
  * - Tool/plugin messages and image asset pointers are skipped (the export
- *   does not include the binary assets).
+ *   does not include the binary assets). The retained byte-real fixture has
+ *   no safe tool-result identity/status mapping, so none is invented.
  * - Messages hidden from the UI (`is_visually_hidden_from_conversation`)
  *   and empty system placeholders are skipped.
  */

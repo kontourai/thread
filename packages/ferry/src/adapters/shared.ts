@@ -1,5 +1,7 @@
 /** Helpers shared across importers. */
 
+import { createHash } from "node:crypto";
+
 /** JSONL input, either a whole document or pre-split lines (for files too large for one string). */
 export type JsonlInput = string | readonly string[];
 
@@ -36,4 +38,22 @@ export function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
+}
+
+/**
+ * Deterministic owner identity for a source-recorded tool result.
+ *
+ * The digest deliberately covers only adapter namespace, source anchors, and
+ * the source result index. Call ids are relationship keys, not result
+ * identities; output text, timestamps, and prose-derived status are mutable
+ * presentation data and must never affect this identifier.
+ */
+export function deterministicToolResultId(
+  namespace: string,
+  sourceAnchors: readonly string[],
+  resultIndex: number,
+): string {
+  const source = JSON.stringify(["ferry-tool-result-v1", namespace, sourceAnchors, resultIndex]);
+  const digest = createHash("sha256").update(source, "utf8").digest("hex");
+  return `ferry:${namespace}:sha256:${digest}`;
 }
