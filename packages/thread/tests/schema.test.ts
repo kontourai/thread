@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AssistantMessage,
+  createToolResult,
   createAssistantMessage,
   createThread,
   createToolMessage,
@@ -9,10 +10,13 @@ import {
   getTextContent,
   getToolCalls,
   isAssistantMessage,
+  isIdentifiedToolResult,
   isToolMessage,
   isUserMessage,
   Message,
+  projectToolResult,
   Thread,
+  ToolResult,
   THREAD_SCHEMA_VERSION,
   threadFromJson,
   threadToJson,
@@ -89,6 +93,178 @@ describe("factories", () => {
   });
 });
 
+describe("tool result identity", () => {
+  const legacy = {
+    toolCallId: "call-1",
+    name: "read_file",
+    content: [{ type: "text" as const, text: "stored exactly" }],
+  };
+
+  const identified = (terminalStatus: "success" | "error" | "cancelled" | "unknown") => ({
+    ...legacy,
+    resultId: `result-${terminalStatus}`,
+    terminalStatus,
+  });
+
+  it("keeps legacy results valid but makes them unavailable for dereference", () => {
+    const result = ToolResult.parse(legacy);
+    expect(isIdentifiedToolResult(result)).toBe(false);
+    expect(projectToolResult(result)).toEqual({
+      state: "unavailable",
+      reason: "identity-not-captured",
+    });
+  });
+
+  it("accepts every owner-issued terminal status", () => {
+    for (const status of ["success", "error", "cancelled", "unknown"] as const) {
+      const result = ToolResult.parse(identified(status));
+      expect(isIdentifiedToolResult(result)).toBe(true);
+      expect(result.terminalStatus).toBe(status);
+    }
+  });
+
+  it("requires result identity and status together without generating either", () => {
+    expect(() => ToolResult.parse({ ...legacy, resultId: "result-1" })).toThrow();
+    expect(() => ToolResult.parse({ ...legacy, terminalStatus: "success" })).toThrow();
+    expect(() =>
+      createToolResult({ ...legacy, resultId: "result-1" } as never),
+    ).toThrow();
+
+    const result = createToolResult({ ...identified("cancelled") });
+    expect(result.resultId).toBe("result-cancelled");
+    expect(result.terminalStatus).toBe("cancelled");
+  });
+
+  it("enforces identified-result invariants", () => {
+    expect(() => ToolResult.parse({ ...identified("success"), resultId: "call-1" })).toThrow();
+    expect(() =>
+      ToolResult.parse({ ...legacy, authorityDecision: { decision: "denied", authority: "policy" } }),
+    ).toThrow();
+    expect(() =>
+      ToolResult.parse({
+        ...legacy,
+        correlations: [{ namespace: "source", kind: "event", id: "event-1" }],
+      }),
+    ).toThrow();
+    expect(() =>
+      ToolResult.parse({
+        ...identified("success"),
+        authorityDecision: { decision: "denied", authority: "policy" },
+      }),
+    ).toThrow();
+    expect(() => ToolResult.parse({ ...identified("success"), isError: true })).toThrow();
+    expect(() => ToolResult.parse({ ...identified("error"), isError: false })).toThrow();
+  });
+
+  it("bounds and deduplicates correlations", () => {
+    const correlation = { namespace: "source", kind: "event" as const, id: "event-1" };
+    expect(() =>
+      ToolResult.parse({ ...identified("unknown"), correlations: [correlation, correlation] }),
+    ).toThrow();
+    expect(() =>
+      ToolResult.parse({
+        ...identified("unknown"),
+        correlations: Array.from({ length: 17 }, (_, index) => ({
+          namespace: "source",
+          kind: "event" as const,
+          id: `event-${index}`,
+        })),
+      }),
+    ).toThrow();
+    expect(() =>
+      ToolResult.parse({
+        ...identified("unknown"),
+        resultId: "x".repeat(4097),
+      }),
+    ).toThrow();
+    expect(() =>
+      ToolResult.parse({
+        ...identified("unknown"),
+        correlations: [{ namespace: "x".repeat(4097), kind: "event", id: "event-1" }],
+      }),
+    ).toThrow();
+  });
+
+  it("rejects a result ID reused across tool messages in one thread", () => {
+    const first = {
+      ...createToolMessage("t", [{ ...identified("success"), resultId: "result-shared" }]),
+      timestamp: 1,
+    };
+    const second = {
+      ...createToolMessage("t", [{ ...identified("cancelled"), resultId: "result-shared" }]),
+      timestamp: 2,
+    };
+    expect(() =>
+      Thread.parse({ id: "t", messages: [first, second], createdAt: 1, updatedAt: 2 }),
+    ).toThrow();
+  });
+
+  it("projects identified results without exposing executable or payload-bearing data", () => {
+    const result = ToolResult.parse({
+      toolCallId: "call-1",
+      resultId: "result-1",
+      terminalStatus: "error",
+      name: "x".repeat(300),
+      isError: true,
+      authorityDecision: { decision: "denied", authority: "station", policyId: "policy-7" },
+      correlations: [{ namespace: "station", kind: "turn", id: "turn-4" }],
+      structuredResult: { internalValue: "do-not-project" },
+      content: [
+        { type: "text", text: "visible", annotations: { sourceUrl: "https://private.example" } },
+        { type: "image", data: "data:image/png;base64,private", mediaType: "image/png" },
+        {
+          type: "file",
+          name: "../private.txt",
+          mediaType: "text/plain",
+          data: "file:///private.txt",
+          size: 7,
+        },
+      ],
+    });
+    const projected = projectToolResult(result);
+    expect(projected).toEqual({
+      state: "available",
+      result: {
+        resultId: "result-1",
+        name: "x".repeat(256),
+        terminalStatus: "error",
+        authorityDecision: { decision: "denied", authority: "station", policyId: "policy-7" },
+        correlations: [{ namespace: "station", kind: "turn", id: "turn-4" }],
+        content: [
+          { type: "text", text: "visible" },
+          { type: "image", mediaType: "image/png" },
+          { type: "file", name: "file", mediaType: "text/plain", size: 7 },
+        ],
+        truncated: false,
+        omittedParts: 0,
+        omittedTextBytes: 0,
+      },
+    });
+    expect(JSON.stringify(projected)).not.toContain("call-1");
+    expect(JSON.stringify(projected)).not.toContain("private.example");
+    expect(JSON.stringify(projected)).not.toContain("file:///private.txt");
+  });
+
+  it("bounds projection parts and text bytes without splitting emoji", () => {
+    const oversizedText = `${"a".repeat(65535)}😀`;
+    const result = ToolResult.parse({
+      ...identified("unknown"),
+      content: [
+        { type: "text", text: oversizedText },
+        ...Array.from({ length: 32 }, (_, index) => ({ type: "text" as const, text: `tail-${index}` })),
+      ],
+    });
+    const projected = projectToolResult(result);
+    expect(projected.state).toBe("available");
+    if (projected.state !== "available") return;
+    expect(projected.result.content).toHaveLength(32);
+    expect(projected.result.content[0]).toEqual({ type: "text", text: "a".repeat(65535) });
+    expect(projected.result.truncated).toBe(true);
+    expect(projected.result.omittedParts).toBe(1);
+    expect(projected.result.omittedTextBytes).toBe(217);
+  });
+});
+
 describe("json round trip", () => {
   it("survives serialize → parse byte-stable", () => {
     const thread = createThread(
@@ -114,6 +290,27 @@ describe("json round trip", () => {
     const thread = { ...createThread([]), schemaVersion: undefined };
     const parsed = JSON.parse(threadToJson(thread));
     expect(parsed.schemaVersion).toBe(THREAD_SCHEMA_VERSION);
+  });
+
+  it("round-trips identified result content without projection loss", () => {
+    const message = {
+      ...createToolMessage("t", [
+        {
+          toolCallId: "call-1",
+          resultId: "result-1",
+          terminalStatus: "success" as const,
+          name: "read",
+          content: [
+            { type: "text" as const, text: "verbatim", annotations: { trace: "kept" } },
+            { type: "image" as const, data: "data:image/png;base64,bytes", mediaType: "image/png" },
+          ],
+          structuredResult: { raw: { value: true } },
+        },
+      ]),
+      timestamp: 1,
+    };
+    const thread = createThread([message], undefined, { id: "t", createdAt: 1, updatedAt: 1 });
+    expect(threadFromJson(threadToJson(thread))).toEqual(thread);
   });
 
   it("rejects structurally invalid thread JSON", () => {

@@ -10,12 +10,20 @@
 
 import { z } from "zod";
 
-export const THREAD_SCHEMA_VERSION = "1.1.0";
+export const THREAD_SCHEMA_VERSION = "1.2.0";
 export const SCHEMA_NAME = "@kontourai/thread";
 
 // ---------------------------------------------------------------------------
 // Base scalars
 // ---------------------------------------------------------------------------
+
+/** Stable, opaque identifiers supplied by the owning system. */
+export const BoundedOpaqueId = z.string().min(1).max(4096);
+export type BoundedOpaqueId = z.infer<typeof BoundedOpaqueId>;
+
+/** Namespace labels supplied by an adapter or provider. */
+export const BoundedNamespace = z.string().min(1).max(4096);
+export type BoundedNamespace = z.infer<typeof BoundedNamespace>;
 
 export const MessageId = z.string().min(1);
 export type MessageId = z.infer<typeof MessageId>;
@@ -25,6 +33,10 @@ export type ThreadId = z.infer<typeof ThreadId>;
 
 export const ToolCallId = z.string().min(1);
 export type ToolCallId = z.infer<typeof ToolCallId>;
+
+/** A provider-issued identity for one terminal tool result, never a call ID. */
+export const ToolResultId = BoundedOpaqueId;
+export type ToolResultId = z.infer<typeof ToolResultId>;
 
 export const ModelId = z.string();
 export type ModelId = z.infer<typeof ModelId>;
@@ -97,20 +109,117 @@ export const ToolCall = z.object({
 });
 export type ToolCall = z.infer<typeof ToolCall>;
 
-export const ToolResult = z.object({
-  toolCallId: ToolCallId,
-  /**
-   * Tool name. Importers that can pair a result with its call carry the
-   * call's name across (claude-code, codex, opencode); `""` means genuinely
-   * unpaired — a result whose call was never seen — not "this source does
-   * not record it".
-   */
-  name: z.string(),
-  content: z.array(ContentPart),
-  isError: z.boolean().optional(),
-  structuredResult: z.record(z.string(), z.unknown()).optional(),
+export const ToolResultTerminalStatus = z.enum(["success", "error", "cancelled", "unknown"]);
+export type ToolResultTerminalStatus = z.infer<typeof ToolResultTerminalStatus>;
+
+/** An explicit policy denial, as reported by the owning authority. */
+export const ToolResultAuthorityDecision = z.object({
+  decision: z.literal("denied"),
+  authority: BoundedOpaqueId,
+  policyId: BoundedOpaqueId.optional(),
 });
+export type ToolResultAuthorityDecision = z.infer<typeof ToolResultAuthorityDecision>;
+
+/** A portable pointer to the source session, turn, event, message, or result. */
+export const ToolResultCorrelation = z.object({
+  namespace: BoundedNamespace,
+  kind: z.enum(["session", "turn", "event", "message", "result"]),
+  id: BoundedOpaqueId,
+});
+export type ToolResultCorrelation = z.infer<typeof ToolResultCorrelation>;
+
+export const ToolResult = z
+  .object({
+    toolCallId: ToolCallId,
+    /**
+     * Tool name. Importers that can pair a result with its call carry the
+     * call's name across (claude-code, codex, opencode); `""` means genuinely
+     * unpaired — a result whose call was never seen — not "this source does
+     * not record it".
+     */
+    name: z.string(),
+    content: z.array(ContentPart),
+    isError: z.boolean().optional(),
+    structuredResult: z.record(z.string(), z.unknown()).optional(),
+    /** Owner-issued result identity and its terminal standing are inseparable. */
+    resultId: ToolResultId.optional(),
+    terminalStatus: ToolResultTerminalStatus.optional(),
+    authorityDecision: ToolResultAuthorityDecision.optional(),
+    correlations: z.array(ToolResultCorrelation).max(16).optional(),
+  })
+  .superRefine((result, ctx) => {
+    const identified = result.resultId !== undefined && result.terminalStatus !== undefined;
+    if ((result.resultId === undefined) !== (result.terminalStatus === undefined)) {
+      ctx.addIssue({
+        code: "custom",
+        path: result.resultId === undefined ? ["resultId"] : ["terminalStatus"],
+        message: "resultId and terminalStatus must be supplied together",
+      });
+    }
+    if (result.resultId !== undefined && result.resultId === result.toolCallId) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["resultId"],
+        message: "resultId must not equal toolCallId",
+      });
+    }
+    if (!identified && result.authorityDecision !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["authorityDecision"],
+        message: "authorityDecision requires an identified tool result",
+      });
+    }
+    if (!identified && result.correlations !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["correlations"],
+        message: "correlations require an identified tool result",
+      });
+    }
+    if (result.authorityDecision !== undefined && result.terminalStatus === "success") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["authorityDecision"],
+        message: "a denied result cannot have success terminalStatus",
+      });
+    }
+    if (result.terminalStatus === "success" && result.isError === true) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["isError"],
+        message: "isError must not be true for a successful result",
+      });
+    }
+    if (result.terminalStatus === "error" && result.isError === false) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["isError"],
+        message: "isError must not be false for an error result",
+      });
+    }
+    if (result.correlations !== undefined) {
+      const seen = new Set<string>();
+      for (const [index, correlation] of result.correlations.entries()) {
+        const key = `${correlation.namespace}\u0000${correlation.kind}\u0000${correlation.id}`;
+        if (seen.has(key)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["correlations", index],
+            message: "correlations must be unique",
+          });
+        }
+        seen.add(key);
+      }
+    }
+  });
 export type ToolResult = z.infer<typeof ToolResult>;
+
+/** A result whose identity and terminal standing were recorded by its owner. */
+export type IdentifiedToolResult = ToolResult & {
+  resultId: ToolResultId;
+  terminalStatus: ToolResultTerminalStatus;
+};
 
 // ---------------------------------------------------------------------------
 // Reasoning
@@ -258,18 +367,36 @@ export const ThreadMetadata = z.object({
 });
 export type ThreadMetadata = z.infer<typeof ThreadMetadata>;
 
-export const Thread = z.object({
-  /**
-   * Serialized threads written by this package always stamp the version;
-   * it is optional on parse so hand-built objects remain valid.
-   */
-  schemaVersion: z.string().optional(),
-  id: ThreadId,
-  messages: z.array(Message),
-  metadata: ThreadMetadata.optional(),
-  createdAt: Timestamp,
-  updatedAt: Timestamp,
-});
+export const Thread = z
+  .object({
+    /**
+     * Serialized threads written by this package always stamp the version;
+     * it is optional on parse so hand-built objects remain valid.
+     */
+    schemaVersion: z.string().optional(),
+    id: ThreadId,
+    messages: z.array(Message),
+    metadata: ThreadMetadata.optional(),
+    createdAt: Timestamp,
+    updatedAt: Timestamp,
+  })
+  .superRefine((thread, ctx) => {
+    const resultIds = new Set<string>();
+    for (const [messageIndex, message] of thread.messages.entries()) {
+      if (message.role !== "tool") continue;
+      for (const [resultIndex, result] of message.toolResults.entries()) {
+        if (result.resultId === undefined) continue;
+        if (resultIds.has(result.resultId)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["messages", messageIndex, "toolResults", resultIndex, "resultId"],
+            message: "identified tool result IDs must be unique within a thread",
+          });
+        }
+        resultIds.add(result.resultId);
+      }
+    }
+  });
 export type Thread = z.infer<typeof Thread>;
 
 // ---------------------------------------------------------------------------
@@ -281,6 +408,10 @@ export const isAssistantMessage = (msg: Message): msg is AssistantMessage =>
   msg.role === "assistant";
 export const isSystemMessage = (msg: Message): msg is SystemMessage => msg.role === "system";
 export const isToolMessage = (msg: Message): msg is ToolMessage => msg.role === "tool";
+
+/** True when this result retains the owner-issued identity required for dereference. */
+export const isIdentifiedToolResult = (result: ToolResult): result is IdentifiedToolResult =>
+  result.resultId !== undefined && result.terminalStatus !== undefined;
 
 /** Concatenated text of a message's text parts (empty string for tool messages). */
 export const getTextContent = (msg: Message): string => {
@@ -327,6 +458,19 @@ export const createMessageId = (): MessageId => generateId("msg");
 export const createThreadId = (): ThreadId => generateId("thread");
 export const createToolCallId = (): ToolCallId => generateId("call");
 export const now = (): Timestamp => Date.now();
+
+/**
+ * Creates an owner-identified tool result. The caller must supply the owner
+ * result ID and terminal status; this factory deliberately never invents
+ * either piece of source evidence.
+ */
+export const createToolResult = (result: IdentifiedToolResult): IdentifiedToolResult => {
+  const parsed = ToolResult.parse(result);
+  if (!isIdentifiedToolResult(parsed)) {
+    throw new Error("createToolResult requires resultId and terminalStatus");
+  }
+  return parsed;
+};
 
 export const createUserMessage = (
   threadId: ThreadId,
@@ -389,6 +533,152 @@ export const createThread = (
     metadata,
     createdAt: options?.createdAt ?? messages[0]?.timestamp ?? fallback,
     updatedAt: options?.updatedAt ?? messages[messages.length - 1]?.timestamp ?? fallback,
+  };
+};
+
+// ---------------------------------------------------------------------------
+// Safe tool-result projection
+// ---------------------------------------------------------------------------
+
+/** Maximum result content parts made available by a portable projection. */
+export const MAX_PROJECTED_TOOL_RESULT_PARTS = 32;
+/** Maximum UTF-8 text bytes made available by a portable projection. */
+export const MAX_PROJECTED_TOOL_RESULT_TEXT_BYTES = 64 * 1024;
+/** Maximum UTF-8 bytes in a displayed tool or file label. */
+export const MAX_PROJECTED_TOOL_RESULT_LABEL_BYTES = 256;
+
+export const SafeToolResultPart = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("text"), text: z.string() }),
+  z.object({ type: z.literal("image"), mediaType: z.string() }),
+  z.object({
+    type: z.literal("file"),
+    name: z.string(),
+    mediaType: z.string(),
+    size: z.number().int().nonnegative().optional(),
+  }),
+]);
+export type SafeToolResultPart = z.infer<typeof SafeToolResultPart>;
+
+/**
+ * Content that can cross a consumer boundary without exposing tool payloads,
+ * URLs, annotations, or structured result data. `truncated` records capacity
+ * loss only; image/file payload omission is an intentional projection rule.
+ */
+export const SafeToolResultProjection = z.object({
+  resultId: ToolResultId,
+  name: z.string(),
+  terminalStatus: ToolResultTerminalStatus,
+  authorityDecision: ToolResultAuthorityDecision.optional(),
+  correlations: z.array(ToolResultCorrelation).max(16).optional(),
+  content: z.array(SafeToolResultPart).max(MAX_PROJECTED_TOOL_RESULT_PARTS),
+  truncated: z.boolean(),
+  omittedParts: z.number().int().nonnegative(),
+  omittedTextBytes: z.number().int().nonnegative(),
+});
+export type SafeToolResultProjection = z.infer<typeof SafeToolResultProjection>;
+
+export type ToolResultProjectionOutcome =
+  | { state: "available"; result: SafeToolResultProjection }
+  | { state: "unavailable"; reason: "identity-not-captured" };
+
+/** Byte length matching UTF-8 encoding without requiring DOM or Node globals. */
+const utf8ByteLength = (value: string): number => {
+  let bytes = 0;
+  for (const codePoint of value) {
+    const valueAtPoint = codePoint.codePointAt(0) ?? 0;
+    if (valueAtPoint <= 0x7f) bytes += 1;
+    else if (valueAtPoint <= 0x7ff) bytes += 2;
+    else if (valueAtPoint <= 0xffff) bytes += 3;
+    else bytes += 4;
+  }
+  return bytes;
+};
+
+/** Truncates at Unicode code-point boundaries, so it never leaves a broken emoji surrogate. */
+const truncateUtf8 = (value: string, limit: number): { value: string; omittedBytes: number } => {
+  if (utf8ByteLength(value) <= limit) return { value, omittedBytes: 0 };
+
+  let bytes = 0;
+  let end = 0;
+  for (const codePoint of value) {
+    const codePointBytes = utf8ByteLength(codePoint);
+    if (bytes + codePointBytes > limit) break;
+    bytes += codePointBytes;
+    end += codePoint.length;
+  }
+  return { value: value.slice(0, end), omittedBytes: utf8ByteLength(value) - bytes };
+};
+
+const safeLabel = (value: string, fallback: string): string => {
+  const nonempty = value.length > 0 ? value : fallback;
+  return truncateUtf8(nonempty, MAX_PROJECTED_TOOL_RESULT_LABEL_BYTES).value;
+};
+
+const safeFileName = (name: string): string => {
+  // Paths, traversal markers, and control characters are not portable names.
+  if (
+    name.length === 0 ||
+    name === "." ||
+    name === ".." ||
+    /[\\/\u0000-\u001F\u007F]/u.test(name)
+  ) {
+    return "file";
+  }
+  return safeLabel(name, "file");
+};
+
+/**
+ * Produces a bounded inert view for consumers that later dereference a known
+ * result. Legacy results deliberately disclose no call-derived identity.
+ */
+export const projectToolResult = (result: ToolResult): ToolResultProjectionOutcome => {
+  if (!isIdentifiedToolResult(result)) {
+    return { state: "unavailable", reason: "identity-not-captured" };
+  }
+
+  const content: SafeToolResultPart[] = [];
+  let remainingTextBytes = MAX_PROJECTED_TOOL_RESULT_TEXT_BYTES;
+  let omittedTextBytes = 0;
+  const retainedParts = result.content.slice(0, MAX_PROJECTED_TOOL_RESULT_PARTS);
+
+  for (const part of retainedParts) {
+    if (part.type === "text") {
+      const projected = truncateUtf8(part.text, remainingTextBytes);
+      remainingTextBytes -= utf8ByteLength(projected.value);
+      omittedTextBytes += projected.omittedBytes;
+      content.push({ type: "text", text: projected.value });
+    } else if (part.type === "image") {
+      content.push({ type: "image", mediaType: part.mediaType });
+    } else {
+      content.push({
+        type: "file",
+        name: safeFileName(part.name),
+        mediaType: part.mediaType,
+        ...(part.size === undefined ? {} : { size: part.size }),
+      });
+    }
+  }
+
+  for (const part of result.content.slice(MAX_PROJECTED_TOOL_RESULT_PARTS)) {
+    if (part.type === "text") omittedTextBytes += utf8ByteLength(part.text);
+  }
+
+  const omittedParts = result.content.length - retainedParts.length;
+  return {
+    state: "available",
+    result: {
+      resultId: result.resultId,
+      name: safeLabel(result.name, "tool"),
+      terminalStatus: result.terminalStatus,
+      ...(result.authorityDecision === undefined
+        ? {}
+        : { authorityDecision: result.authorityDecision }),
+      ...(result.correlations === undefined ? {} : { correlations: result.correlations }),
+      content,
+      truncated: omittedParts > 0 || omittedTextBytes > 0,
+      omittedParts,
+      omittedTextBytes,
+    },
   };
 };
 

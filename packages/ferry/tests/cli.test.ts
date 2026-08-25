@@ -135,9 +135,9 @@ describe("ferry CLI (built binary)", () => {
       "thread",
     ]);
     const thread = JSON.parse(out);
-    // Bumped to 1.1.0 by the additive optional ToolCall.derived field
+    // Bumped to 1.2.0 by the additive ToolResult identity contract
     // (repo rule: a schema change updates THREAD_SCHEMA_VERSION per semver).
-    expect(thread.schemaVersion).toBe("1.1.0");
+    expect(thread.schemaVersion).toBe("1.2.0");
     expect(thread.metadata.source).toBe("codex");
   });
 
@@ -385,4 +385,3 @@ describe("ferry usage --by source (#34)", () => {
     expect(message).toContain('"source"');
   });
 });
-
