@@ -315,6 +315,19 @@ describe("muse importer — tool-calling session", () => {
   });
 });
 
+describe("muse result correlations", () => {
+  it("keeps the envelope event correlation without a session record", () => {
+    const document = JSON.parse(fixture(CHAT)) as { sessions: unknown[] };
+    document.sessions = [];
+    const thread = importFromMuse(JSON.stringify(document));
+    const message = thread.messages.find((item) => item.role === "tool");
+    if (message?.role !== "tool") throw new Error("expected tool");
+    expect(message.toolResults[0]?.correlations).toEqual([
+      { namespace: "muse", kind: "event", id: "400ed043-7f27-4bf2-8f7d-3e2f2cf40fea" },
+    ]);
+  });
+});
+
 describe("muse importer — shapes not present in the probe corpus", () => {
   // Every reasoning event observed from muse 0.1.0 had empty `text` with the
   // content in `encrypted_content`. This pins the plaintext branch's behaviour.

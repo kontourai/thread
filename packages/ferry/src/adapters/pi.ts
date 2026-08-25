@@ -236,12 +236,12 @@ export function importFromPi(jsonlContent: JsonlInput, options: PiImportOptions 
                   terminalStatus: message["isError"] === false
                     ? "success"
                     : "unknown",
-                  ...(sessionId === undefined
-                    ? {}
-                    : { correlations: [
-                        { namespace: "pi", kind: "session" as const, id: sessionId },
-                        { namespace: "pi", kind: "message" as const, id: record.id },
-                      ] }),
+                  correlations: [
+                    ...(sessionId === undefined
+                      ? []
+                      : [{ namespace: "pi", kind: "session" as const, id: sessionId }]),
+                    { namespace: "pi", kind: "message" as const, id: record.id },
+                  ],
                 }),
           },
         ],

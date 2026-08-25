@@ -1067,6 +1067,9 @@ describe("tool result identity anchors", () => {
     expect(result(restored.thread()).correlations).toEqual([
       { namespace: "codex", kind: "session", id: "late-session" },
     ]);
+    const outputOnly = importFromCodex(source.split("\n")[0]!);
+    expect(result(outputOnly).correlations).toBeUndefined();
+    expect(outputOnly.id).toBe("codex-session");
   });
 });
 

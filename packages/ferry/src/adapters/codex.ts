@@ -98,6 +98,8 @@ interface CodexReducerState {
   announcedMessageCount?: number;
   syntheticId: number;
   sessionId?: string;
+  /** Session id actually present in session_meta; excludes the local fallback. */
+  observedSessionId?: string;
   cwd?: string;
   cliVersion?: string;
   provider?: string;
@@ -179,7 +181,10 @@ function stepCodex(
   const payload = asRecord(record.payload);
   if (!payload) { state.duplicateAgentMessageText = undefined; return; }
   if (record.type === "session_meta") {
-    if (typeof payload["id"] === "string") state.sessionId ??= payload["id"];
+    if (typeof payload["id"] === "string") {
+      state.observedSessionId ??= payload["id"];
+      state.sessionId ??= payload["id"];
+    }
     if (typeof payload["cwd"] === "string") state.cwd ??= payload["cwd"];
     if (typeof payload["cli_version"] === "string") state.cliVersion ??= payload["cli_version"];
     if (typeof payload["model_provider"] === "string") state.provider ??= payload["model_provider"];
@@ -414,12 +419,12 @@ function reconcileCodexStateMessageIds(state: CodexReducerState): void {
 
 /** Adds only source-recorded session correlation; never infers a turn by adjacency. */
 function reconcileCodexResultCorrelations(state: CodexReducerState): void {
-  if (state.sessionId === undefined) return;
+  if (state.observedSessionId === undefined) return;
   for (const message of state.messages) {
     if (message.role !== "tool") continue;
     for (const result of message.toolResults) {
       if (result.resultId === undefined) continue;
-      const session = { namespace: "codex", kind: "session" as const, id: state.sessionId };
+      const session = { namespace: "codex", kind: "session" as const, id: state.observedSessionId };
       if (!result.correlations?.some((item) => item.namespace === session.namespace && item.kind === session.kind && item.id === session.id)) {
         result.correlations = [session, ...(result.correlations ?? [])];
       }

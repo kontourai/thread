@@ -88,6 +88,17 @@ describe("kiro importer", () => {
     expect(result.toolResults[0]).toMatchObject({ terminalStatus: "unknown" });
     expect(result.toolResults[0]?.isError).toBeUndefined();
   });
+
+  it("keeps Kiro message correlation when the caller did not supply a session", () => {
+    const thread = importFromKiro(
+      '{"version":"v1","kind":"ToolResults","data":{"message_id":"m1","content":[{"kind":"toolResult","data":{"toolUseId":"c1","content":[],"status":"pending"}}]}}',
+    );
+    const message = thread.messages[0];
+    if (message?.role !== "tool") throw new Error("expected tool");
+    expect(message.toolResults[0]?.correlations).toEqual([
+      { namespace: "kiro", kind: "message", id: "m1" },
+    ]);
+  });
 });
 
 describe("pi importer", () => {
@@ -170,6 +181,17 @@ describe("pi importer", () => {
     if (result?.role !== "tool") throw new Error("expected tool");
     expect(result.toolResults[0]).toMatchObject({ terminalStatus: "unknown" });
     expect(result.toolResults[0]?.isError).toBeUndefined();
+  });
+
+  it("keeps Pi outer record correlation when the session header is absent", () => {
+    const thread = importFromPi(
+      '{"type":"message","id":"r1","timestamp":"2026-08-01T09:00:01.000Z","message":{"role":"toolResult","toolCallId":"c1","toolName":"shell","content":[]}}',
+    );
+    const message = thread.messages[0];
+    if (message?.role !== "tool") throw new Error("expected tool");
+    expect(message.toolResults[0]?.correlations).toEqual([
+      { namespace: "pi", kind: "message", id: "r1" },
+    ]);
   });
 });
 

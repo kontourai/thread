@@ -260,12 +260,12 @@ function toToolResult(
       : {
           resultId: deterministicToolResultId("kiro", [messageId], partIndex),
           terminalStatus: status,
-          ...(sourceSessionId === undefined
-            ? {}
-            : { correlations: [
-                { namespace: "kiro", kind: "session" as const, id: sourceSessionId },
-                { namespace: "kiro", kind: "message" as const, id: messageId },
-              ] }),
+          correlations: [
+            ...(sourceSessionId === undefined
+              ? []
+              : [{ namespace: "kiro", kind: "session" as const, id: sourceSessionId }]),
+            { namespace: "kiro", kind: "message" as const, id: messageId },
+          ],
         }),
   };
 }

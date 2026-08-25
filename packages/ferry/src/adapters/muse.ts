@@ -471,12 +471,12 @@ export function importFromMuse(jsonContent: string, options: MuseImportOptions =
                   resultId: deterministicToolResultId("muse", [envelope.id], batchIndex),
                   // Result prose and embedded JSON do not declare terminal state.
                   terminalStatus: "unknown",
-                  ...(sourceSessionId === undefined
-                    ? {}
-                    : { correlations: [
-                        { namespace: "muse", kind: "session" as const, id: sourceSessionId },
-                        { namespace: "muse", kind: "event" as const, id: envelope.id },
-                      ] }),
+                  correlations: [
+                    ...(sourceSessionId === undefined
+                      ? []
+                      : [{ namespace: "muse", kind: "session" as const, id: sourceSessionId }]),
+                    { namespace: "muse", kind: "event" as const, id: envelope.id },
+                  ],
                 }),
           });
         }
