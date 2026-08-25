@@ -85,8 +85,11 @@ export function exportToMarkdown(thread: Thread, options: MarkdownOptions = {}):
     } else if (msg.role === "tool" && includeToolCalls) {
       for (const result of msg.toolResults) {
         const label = result.name ? `${result.name} ` : "";
-        const status = result.isError ? " (error)" : "";
-        lines.push(`**← ${label}result${status}**`, "");
+        const status = result.terminalStatus === undefined ? "" : ` (status: ${result.terminalStatus})`;
+        const denied = result.authorityDecision === undefined
+          ? ""
+          : ` — Denied by ${result.authorityDecision.authority}`;
+        lines.push(`**← ${label}result${status}${denied}**`, "");
         const text = result.content
           .map((c) => (c.type === "text" ? c.text : `[${c.type}]`))
           .join("\n");

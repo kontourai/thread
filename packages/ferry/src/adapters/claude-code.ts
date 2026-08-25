@@ -17,6 +17,9 @@
  * - `isMeta` user events (injected context, not user speech) are skipped.
  * - The `toolUseResult` sidecar (structured duplicate of tool_result content,
  *   often containing whole files) is not imported.
+ * - Result identity is derived from the observed session, event UUID (or
+ *   record occurrence), and block index. `is_error: true` is error; the
+ *   observed Anthropic block contract defines false/absence as success.
  * - Pricing and deduplication usage extras are retained in
  *   `metadata.claudeUsageExtras`; other provider-specific usage fields (such
  *   as `inference_geo`, `iterations`, and `speed`) are dropped.
@@ -43,7 +46,7 @@ import type {
   ToolResult,
 } from "@kontourai/thread";
 import { FinishReason, THREAD_SCHEMA_VERSION } from "@kontourai/thread";
-import { parseTimestamp, toLines, type JsonlInput } from "./shared.js";
+import { deterministicToolResultId, parseTimestamp, toLines, type JsonlInput } from "./shared.js";
 
 const ConversationEvent = z
   .object({
@@ -197,7 +200,7 @@ function stepClaude(event: ConversationEvent, state: ClaudeReducerState): void {
     if (apiMessage.role === "user") {
       const blocks = typeof apiMessage.content === "string" ? [] : apiMessage.content;
       const toolResults: ToolResult[] = [];
-      for (const block of blocks) {
+      for (const [blockIndex, block] of blocks.entries()) {
         if (typeof block !== "object" || block === null) continue;
         const b = block as Record<string, unknown>;
         if (b["type"] === "tool_result" && typeof b["tool_use_id"] === "string") {
@@ -209,11 +212,35 @@ function stepClaude(event: ConversationEvent, state: ClaudeReducerState): void {
           const pendingNames = (state.pendingToolNames ??= {});
           const resolvedName = pendingNames[callId] ?? "";
           delete pendingNames[callId];
+          const sessionAnchor = event.sessionId ?? state.sessionId;
+          const eventAnchor = event.uuid ?? `record:${state.eventCount}`;
           toolResults.push({
             toolCallId: callId,
             name: resolvedName,
             content: contentPartsFromBlocks(b["content"]),
-            isError: typeof b["is_error"] === "boolean" ? b["is_error"] : undefined,
+            // Claude's observed tool_result contract defaults an absent
+            // is_error to false. This is source-format semantics, not an
+            // inference from result prose.
+            isError: b["is_error"] === true,
+            ...(sessionAnchor === undefined
+              ? {}
+              : {
+                  resultId: deterministicToolResultId(
+                    "claude-code",
+                    [sessionAnchor, eventAnchor],
+                    blockIndex,
+                  ),
+                  terminalStatus: b["is_error"] === true ? "error" : "success",
+                  correlations: [
+                    { namespace: "claude-code", kind: "session" as const, id: sessionAnchor },
+                    { namespace: "claude-code", kind: "event" as const, id: eventAnchor },
+                    {
+                      namespace: "claude-code",
+                      kind: "message" as const,
+                      id: apiMessage.id ?? eventAnchor,
+                    },
+                  ],
+                }),
           });
         }
       }

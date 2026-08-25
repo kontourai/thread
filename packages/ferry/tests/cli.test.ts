@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
+import { createAssistantMessage, createThread, createToolMessage } from "@kontourai/thread";
+import { toolCallRows } from "../src/index.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const cli = join(here, "..", "dist", "src", "cli.js");
@@ -216,9 +218,11 @@ describe("ferry rows (#37)", () => {
       model: "gpt-5-codex",
       tool: "exec",
       toolCallId: "c1",
-      isError: false,
+      resultStatus: "unknown",
     });
     expect(first["resultChars"]).toBe(5);
+    expect(first["isError"]).toBeUndefined();
+    expect(String(first["toolResultId"])).toMatch(/^ferry:codex:sha256:[a-f0-9]{64}$/);
     // The derivation rides along, still marked as derived rather than input.
     expect(
       (first["derived"] as Record<string, Record<string, unknown>>)["codexExec"]?.["operation"],
@@ -232,6 +236,33 @@ describe("ferry rows (#37)", () => {
     const unpaired = rows.find((row) => row["toolCallId"] === "c3")!;
     expect(unpaired["isError"]).toBeUndefined();
     expect(unpaired["resultChars"]).toBeUndefined();
+  });
+
+  it("keeps one row per call and preserves the established last-result join", () => {
+    const threadId = "rows-repeat";
+    const thread = createThread([
+      createAssistantMessage(threadId, [
+        { type: "tool_call", toolCall: { id: "c1", name: "shell", arguments: "{}" } },
+      ]),
+      createToolMessage(threadId, [
+        {
+          toolCallId: "c1", name: "shell", content: [{ type: "text", text: "first" }],
+          resultId: "r1", terminalStatus: "success", isError: false,
+        },
+      ]),
+      createToolMessage(threadId, [
+        {
+          toolCallId: "c1", name: "shell", content: [{ type: "text", text: "second" }],
+          resultId: "r2", terminalStatus: "unknown",
+        },
+      ]),
+    ]);
+    expect(toolCallRows(thread)).toEqual([
+      expect.objectContaining({
+        toolCallId: "c1", toolResultId: "r2", resultStatus: "unknown", resultChars: 6,
+      }),
+    ]);
+    expect(toolCallRows(thread)[0]?.isError).toBeUndefined();
   });
 
   it("skips a bad input instead of losing the whole corpus", () => {
@@ -266,7 +297,7 @@ describe("ferry rows (#37)", () => {
     const out = run(["rows", join(fixturesDir, "codex-exec-program.jsonl"), "--csv"]).trim();
     const lines = out.split("\n");
     expect(lines[0]).toBe(
-      "source,threadId,timestamp,model,provider,tool,operation,command,isError,resultChars,cwd,gitBranch",
+      "source,threadId,timestamp,model,provider,tool,operation,command,isError,toolResultId,resultStatus,resultChars,cwd,gitBranch",
     );
     // One header for the whole stream, not one per input thread.
     expect(lines.filter((line) => line.startsWith("source,threadId"))).toHaveLength(1);

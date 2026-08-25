@@ -254,4 +254,43 @@ describe("markdown exporter", () => {
     const md = exportToMarkdown(thread);
     expect(md).toContain('title: "He said: \\"quote\\""');
   });
+
+  it("renders owner status and denial while API exports declare their loss", () => {
+    const t = "thread-result-fidelity";
+    const result = {
+      toolCallId: "c1",
+      name: "shell",
+      content: [{ type: "text" as const, text: "cancelled" }],
+      resultId: "result-1",
+      terminalStatus: "cancelled" as const,
+      authorityDecision: { decision: "denied" as const, authority: "station-policy" },
+      correlations: [{ namespace: "station", kind: "session" as const, id: "session-1" }],
+    };
+    const thread = createThread([
+      createAssistantMessage(t, [{ type: "tool_call", toolCall: { id: "c1", name: "shell", arguments: "{}" } }]),
+      createToolMessage(t, [result]),
+    ]);
+    const markdown = exportToMarkdown(thread);
+    expect(markdown).toContain("status: cancelled");
+    expect(markdown).toContain("Denied by station-policy");
+    for (const exported of [
+      JSON.stringify(exportToOpenAIChat(thread)),
+      JSON.stringify(exportToGemini(thread)),
+      JSON.stringify(exportToAnthropicMessages(thread)),
+    ]) {
+      expect(exported).not.toContain("result-1");
+      expect(exported).not.toContain("station-policy");
+      expect(exported).not.toContain("session-1");
+    }
+    const anthropicCancelled = exportToAnthropicMessages(thread)[1]?.content[0];
+    expect(anthropicCancelled).toEqual({
+      type: "tool_result",
+      tool_use_id: "c1",
+      content: [{ type: "text", text: "cancelled" }],
+    });
+    const errored = createThread([
+      createToolMessage(t, [{ ...result, resultId: "result-2", terminalStatus: "error", isError: true }]),
+    ]);
+    expect(exportToAnthropicMessages(errored)[0]?.content[0]).toMatchObject({ is_error: true });
+  });
 });

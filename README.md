@@ -64,6 +64,12 @@ its source header, and importers report skipped/unparseable records through a
 warning callback (surfaced on stderr by the CLI) instead of losing them
 silently.
 
+When a source transcript records enough anchors, Ferry assigns each imported
+tool result a deterministic namespaced SHA-256 identity and retains only
+source-declared terminal status. It never turns call IDs, timestamps, output
+text, or JSON-looking prose into result identity or standing. API exports
+declare when those fields cannot cross the target boundary.
+
 ## Development
 
 ```sh

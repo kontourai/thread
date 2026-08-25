@@ -11,6 +11,10 @@
  * Tool parts embed both the call and its result; they are split into an
  * assistant `tool_call` plus a following tool message so pairing survives
  * export to API formats.
+ * Source tool-part `id` is the result anchor when available; message id plus
+ * part index is the observed-shape fallback. `completed` is success and
+ * `error` is error. No cancellation mapping is made without a byte-real
+ * fixture proving OpenCode's terminal contract.
  */
 
 import { z } from "zod";
@@ -23,7 +27,7 @@ import type {
   ToolResult,
 } from "@kontourai/thread";
 import { THREAD_SCHEMA_VERSION } from "@kontourai/thread";
-import { asRecord, parseTimestamp } from "./shared.js";
+import { asRecord, deterministicToolResultId, parseTimestamp } from "./shared.js";
 
 const OpenCodeExport = z
   .object({
@@ -116,7 +120,7 @@ export function importFromOpenCode(jsonContent: string): Thread {
     // results (which OpenCode embeds in the same parts) as a tool message.
     const content: AssistantContent[] = [];
     const toolResults: ToolResult[] = [];
-    for (const part of message.parts) {
+    for (const [partIndex, part] of message.parts.entries()) {
       const p = part as Record<string, unknown>;
       if (p["type"] === "text" && typeof p["text"] === "string") {
         content.push({ type: "text", text: p["text"] });
@@ -138,6 +142,16 @@ export function importFromOpenCode(jsonContent: string): Thread {
           },
         });
         if (typeof state["output"] === "string" || state["status"] === "error") {
+          const sourcePartId = typeof p["id"] === "string"
+            ? p["id"]
+            : info.id === undefined
+              ? undefined
+              : `${info.id}:part:${partIndex}`;
+          const status = state["status"] === "completed"
+            ? "success"
+            : state["status"] === "error"
+              ? "error"
+              : "unknown";
           toolResults.push({
             toolCallId: callId,
             name,
@@ -152,7 +166,23 @@ export function importFromOpenCode(jsonContent: string): Thread {
                       : "",
               },
             ],
-            isError: state["status"] === "error" ? true : undefined,
+            ...(status === "success" ? { isError: false } : {}),
+            ...(status === "error" ? { isError: true } : {}),
+            ...(sourcePartId === undefined
+              ? {}
+              : {
+                  resultId: deterministicToolResultId("opencode", [sourcePartId], 0),
+                  terminalStatus: status,
+                  correlations: [
+                    ...(session.info?.id === undefined
+                      ? []
+                      : [{ namespace: "opencode", kind: "session" as const, id: session.info.id }]),
+                    ...(info.id === undefined
+                      ? []
+                      : [{ namespace: "opencode", kind: "message" as const, id: info.id }]),
+                    { namespace: "opencode", kind: "result", id: sourcePartId },
+                  ],
+                }),
           });
         }
       }

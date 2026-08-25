@@ -102,6 +102,10 @@ describe("muse importer — multi-turn session", () => {
     });
     // muse's committed batch carries no error flag; nothing is invented.
     expect(tool.toolResults[0]?.isError).toBeUndefined();
+    expect(tool.toolResults[0]?.resultId).toMatch(/^ferry:muse:sha256:[a-f0-9]{64}$/);
+    // Even though this particular output is JSON with success:true, Muse's
+    // committed batch does not declare terminal standing.
+    expect(tool.toolResults[0]?.terminalStatus).toBe("unknown");
   });
 
   it("does not double-count tool uses from muse's internal task lifecycle", () => {

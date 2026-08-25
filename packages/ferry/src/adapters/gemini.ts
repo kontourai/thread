@@ -9,6 +9,8 @@
  * - Reasoning parts are dropped.
  * - File parts are flattened to text placeholders.
  * - Tool call ids are not representable; pairing is by function name.
+ * - Tool-result identity, terminal status, authority decisions, and source
+ *   correlations are not representable.
  */
 
 import type { Thread, ToolCall } from "@kontourai/thread";
