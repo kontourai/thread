@@ -32,6 +32,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      # Publishing stays on the npm CLI: provenance and the registry binding are
+      # properties of the publisher, not the installer.
       - name: Setup Node
         uses: actions/setup-node@v7
         with:
@@ -40,7 +45,7 @@ jobs:
           package-manager-cache: false
 
       - name: Install
-        run: npm ci --no-fund --no-audit
+        run: pnpm install --frozen-lockfile
 
       - name: Verify
         run: npm run verify
@@ -87,6 +92,10 @@ jobs:
             echo "published=false" >> "${GITHUB_OUTPUT}"
           fi
 
+      # The package directory, not `-w`: that flag reads package.json's npm-only
+      # `workspaces` field, which this repo no longer carries (pnpm-workspace.yaml
+      # is the single source of truth). `workspace` is already a directory path,
+      # so publishing it directly is the same operation.
       - name: Publish
         if: steps.component.outputs.workspace != '' && steps.published.outputs.published != 'true'
-        run: npm publish --access public --provenance -w ${{ steps.component.outputs.workspace }}
+        run: npm publish "${{ steps.component.outputs.workspace }}" --access public --provenance

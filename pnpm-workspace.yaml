@@ -1,0 +1,31 @@
+# The workspace members. This is the single source of truth: package.json's
+# npm-only `workspaces` field is removed, so the two lists cannot diverge.
+packages:
+  - packages/thread
+  - packages/ferry
+
+# Link sibling packages from this workspace instead of resolving them from the
+# registry. Without this, ferry's `@kontourai/thread: ^0.5.0` would install the
+# PUBLISHED 0.5.0 and the suite would silently test the registry copy rather
+# than the code in this checkout.
+linkWorkspacePackages: true
+
+# Dependency install scripts are blocked by default (pnpm >= 10). Only the
+# packages listed here, at exactly these versions, may run a build script.
+allowBuilds:
+  # postinstall selects the platform binary; without it esbuild falls back to
+  # its slower JS implementation. Bump this pin together with the dependency.
+  esbuild@0.27.7: true
+
+# A newly published version must be at least 24 hours old before it can be
+# resolved into this lockfile. Blunts the most common supply-chain shape (a
+# compromised maintainer publishes and the ecosystem installs within hours).
+# Does not affect installs from an existing lockfile. An urgent security patch
+# is opted in explicitly, by name and version, with the reason in the commit:
+#   minimumReleaseAgeExclude:
+#     - some-package@1.2.3
+minimumReleaseAge: 1440
+
+# mise supplies node and pnpm on developer machines; CI installs the exact
+# version pinned in package.json. Do not reject a same-major pnpm from mise.
+pmOnFail: ignore

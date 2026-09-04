@@ -7,10 +7,13 @@ Node >= 22, plain `tsc` builds, Vitest tests.
 ## Commands
 
 ```sh
-npm install
-npm run verify        # build + typecheck + test, both packages
-npm run test -w packages/ferry   # one package
+pnpm install
+npm run verify                          # build + typecheck + test, both packages
+pnpm --filter @kontourai/ferry test     # one package
 ```
+
+Workspace members are listed in `pnpm-workspace.yaml`; `package.json` no longer
+carries npm's `workspaces` field, so `-w` no longer selects a package.
 
 ## Rules that exist because of real incidents
 
