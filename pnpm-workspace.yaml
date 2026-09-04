@@ -4,10 +4,13 @@ packages:
   - packages/thread
   - packages/ferry
 
-# Link sibling packages from this workspace instead of resolving them from the
-# registry. Without this, ferry's `@kontourai/thread: ^0.5.0` would install the
-# PUBLISHED 0.5.0 and the suite would silently test the registry copy rather
-# than the code in this checkout.
+# Link sibling packages from this workspace rather than resolving them from the
+# registry, so ferry's `@kontourai/thread: ^0.5.0` is the code in this checkout
+# and not the published 0.5.0. This RESTATES pnpm 11's default (verified:
+# `pnpm config get link-workspace-packages` is true, and deleting this line then
+# re-resolving with --no-frozen-lockfile still produced `link:../thread`). It is
+# pinned anyway because the workspace's correctness depends on it and this
+# default has moved between pnpm majors -- not because it changes behaviour today.
 linkWorkspacePackages: true
 
 # Dependency install scripts are blocked by default (pnpm >= 10). Only the
