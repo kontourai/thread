@@ -105,8 +105,21 @@ jobs:
           fi
           # `files` is `dist/src/`, README, LICENSE. A tarball with no dist
           # entry is a published package with no code in it -- the failure this
-          # repo is actually exposed to, and one a file count alone would pass.
-          if ! grep -q "dist/src/" /tmp/publish-dry-run.log; then
+          # repo is actually exposed to, and one a file count alone would pass:
+          # an unbuilt ferry packs 3 files (LICENSE, README, package.json) and
+          # npm exits zero.
+          #
+          # The match is scoped to the Tarball Contents block rather than the
+          # whole log. A plain `grep dist/src/` passed the unbuilt tree, because
+          # what it matched was npm's own warning -- "No bin file found at
+          # dist/src/cli.js" -- the message announcing the absence the check
+          # exists to detect.
+          if ! awk '
+            /^npm notice Tarball Contents/ { inside = 1; next }
+            /^npm notice Tarball Details/  { inside = 0 }
+            inside && /dist\/src\// { found = 1 }
+            END { exit found ? 0 : 1 }
+          ' /tmp/publish-dry-run.log; then
             echo "::error::the ${WORKSPACE} tarball contains no dist/src/ entry; it would publish without its build output." >&2
             exit 1
           fi
