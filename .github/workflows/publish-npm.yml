@@ -94,8 +94,13 @@ jobs:
 
       # The package directory, not `-w`: that flag reads package.json's npm-only
       # `workspaces` field, which this repo no longer carries (pnpm-workspace.yaml
-      # is the single source of truth). `workspace` is already a directory path,
-      # so publishing it directly is the same operation.
+      # is the single source of truth).
+      #
+      # The leading `./` is load-bearing. npm parses a bare `packages/thread` as
+      # a package spec, and `owner/repo` is the GitHub shorthand -- it resolves
+      # to `ssh://git@github.com/packages/thread.git` and fails with "Repository
+      # not found", never looking at the directory. Only an explicitly relative
+      # path is read as a folder.
       - name: Publish
         if: steps.component.outputs.workspace != '' && steps.published.outputs.published != 'true'
-        run: npm publish "${{ steps.component.outputs.workspace }}" --access public --provenance
+        run: npm publish "./${{ steps.component.outputs.workspace }}" --access public --provenance
