@@ -1,0 +1,34 @@
+# The workspace members. This is the single source of truth: package.json's
+# npm-only `workspaces` field is removed, so the two lists cannot diverge.
+packages:
+  - packages/thread
+  - packages/ferry
+
+# Link sibling packages from this workspace rather than resolving them from the
+# registry, so ferry's `@kontourai/thread: ^0.5.0` is the code in this checkout
+# and not the published 0.5.0. This RESTATES pnpm 11's default (verified:
+# `pnpm config get link-workspace-packages` is true, and deleting this line then
+# re-resolving with --no-frozen-lockfile still produced `link:../thread`). It is
+# pinned anyway because the workspace's correctness depends on it and this
+# default has moved between pnpm majors -- not because it changes behaviour today.
+linkWorkspacePackages: true
+
+# Dependency install scripts are blocked by default (pnpm >= 10). Only the
+# packages listed here, at exactly these versions, may run a build script.
+allowBuilds:
+  # postinstall selects the platform binary; without it esbuild falls back to
+  # its slower JS implementation. Bump this pin together with the dependency.
+  esbuild@0.27.7: true
+
+# A newly published version must be at least 24 hours old before it can be
+# resolved into this lockfile. Blunts the most common supply-chain shape (a
+# compromised maintainer publishes and the ecosystem installs within hours).
+# Does not affect installs from an existing lockfile. An urgent security patch
+# is opted in explicitly, by name and version, with the reason in the commit:
+#   minimumReleaseAgeExclude:
+#     - some-package@1.2.3
+minimumReleaseAge: 1440
+
+# mise supplies node and pnpm on developer machines; CI installs the exact
+# version pinned in package.json. Do not reject a same-major pnpm from mise.
+pmOnFail: ignore

@@ -73,9 +73,14 @@ declare when those fields cannot cross the target boundary.
 ## Development
 
 ```sh
-npm install
+pnpm install
 npm run verify   # build + typecheck + test in both packages
 ```
+
+The pnpm version is pinned in `package.json` (`packageManager`), and the
+workspace members are listed in `pnpm-workspace.yaml`. Dependency install
+scripts are blocked by default; a package that needs one is named there under
+`allowBuilds`, pinned by version.
 
 Importers are tested against fixtures that mirror the exact shapes the source
 tools write (field casing, split assistant events, sidechains, noise records),

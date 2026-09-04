@@ -5,14 +5,11 @@
   "engines": {
     "node": ">=22"
   },
-  "workspaces": [
-    "packages/thread",
-    "packages/ferry"
-  ],
+  "packageManager": "pnpm@11.25.0",
   "scripts": {
-    "build": "npm run build --workspaces",
-    "typecheck": "npm run typecheck --workspaces",
-    "test": "npm run test --workspaces",
+    "build": "pnpm -r run build",
+    "typecheck": "pnpm -r run typecheck",
+    "test": "pnpm -r run test",
     "verify": "npm run build && npm run typecheck && npm run test"
   }
 }

@@ -1,11 +1,26 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// Resolve the compiler rather than assuming where the installer put it.
+// `<workspace>/node_modules/typescript` only exists when the package manager
+// hoists every dependency to the workspace root, which npm did and pnpm's
+// isolated layout does not. typescript is a declared devDependency of this
+// package, so module resolution finds it under either layout.
+//
+// Resolve through package.json and join `bin/tsc`: TypeScript's `exports` map
+// does not expose `./bin/tsc`, so resolving that subpath directly throws
+// ERR_PACKAGE_PATH_NOT_EXPORTED. `./package.json` is exported, and its
+// directory is the package root.
+const tscPath = join(
+  dirname(createRequire(import.meta.url).resolve("typescript/package.json")),
+  "bin/tsc",
+);
+
 const packageDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const workspaceDirectory = resolve(packageDirectory, "../..");
 const packageJson = JSON.parse(readFileSync(join(packageDirectory, "package.json"), "utf8"));
 const packageTarball = `${packageJson.name.replace("@", "").replace("/", "-")}-${packageJson.version}.tgz`;
 const temporaryDirectory = mkdtempSync(join(tmpdir(), "kontour-thread-pack-"));
@@ -65,7 +80,7 @@ void safeAnswer;
     join(consumerDirectory, "tsconfig.json"),
     JSON.stringify({ compilerOptions: { target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext", strict: true, noEmit: true } }),
   );
-  execFileSync(process.execPath, [join(workspaceDirectory, "node_modules/typescript/bin/tsc"), "-p", "tsconfig.json"], {
+  execFileSync(process.execPath, [tscPath, "-p", "tsconfig.json"], {
     cwd: consumerDirectory,
     stdio: "inherit",
   });
@@ -89,7 +104,7 @@ try {
     join(consumerDirectory, "browser-tsconfig.json"),
     JSON.stringify({ compilerOptions: { target: "ES2022", lib: ["ES2022", "DOM"], module: "ESNext", moduleResolution: "Bundler", strict: true, noEmit: true, types: [] } }),
   );
-  execFileSync(process.execPath, [join(workspaceDirectory, "node_modules/typescript/bin/tsc"), "-p", "browser-tsconfig.json"], {
+  execFileSync(process.execPath, [tscPath, "-p", "browser-tsconfig.json"], {
     cwd: consumerDirectory,
     stdio: "inherit",
   });
