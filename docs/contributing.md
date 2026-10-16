@@ -50,8 +50,9 @@ npm run docs:check -- --base origin/main
 
 `docs:build` renders the site and MCP-readable bundle under ignored `dist-pages/`.
 The scripts and workflow explicitly select Corpus commit
-`340b66fc8f723c1babe35fce8240c82cd196b0db` so local and hosted checks use the
-same reviewed implementation.
+`b8ecf4cd4c6482bb804cdeea617ebe2d9b78ab05` so local and hosted checks use the
+same reviewed implementation. Its narrow-page renderer wraps long inline text
+while code blocks and wide tables keep their local horizontal scrolling.
 
 ## Hosted and release boundaries
 

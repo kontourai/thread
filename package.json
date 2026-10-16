@@ -7,8 +7,8 @@
   },
   "packageManager": "pnpm@11.25.0",
   "scripts": {
-    "docs:check": "npx -y github:kontourai/corpus#340b66fc8f723c1babe35fce8240c82cd196b0db corpus check",
-    "docs:build": "npx -y github:kontourai/corpus#340b66fc8f723c1babe35fce8240c82cd196b0db corpus build",
+    "docs:check": "npx -y github:kontourai/corpus#b8ecf4cd4c6482bb804cdeea617ebe2d9b78ab05 corpus check",
+    "docs:build": "npx -y github:kontourai/corpus#b8ecf4cd4c6482bb804cdeea617ebe2d9b78ab05 corpus build",
     "build": "pnpm -r run build",
     "typecheck": "pnpm -r run typecheck",
     "test": "pnpm -r run test",
