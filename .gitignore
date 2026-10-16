@@ -1,4 +1,5 @@
 dist/
+dist-pages/
 node_modules/
 .DS_Store
 

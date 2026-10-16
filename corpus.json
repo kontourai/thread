@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 2,
+  "product": "thread",
+  "title": "Thread",
+  "tagline": "A portable conversation schema and transcript conversion tools.",
+  "purpose": "Preserve AI conversations in a validated common representation and make their conversion losses and identity limits explicit.",
+  "builtOn": [],
+  "repo": "kontourai/thread",
+  "landing": "docs/README.md",
+  "documents": [
+    { "source": "README.md", "section": "Start Here" },
+    {
+      "source": "docs/getting-started.md",
+      "section": "Start Here",
+      "covers": ["packages/thread/package.json", "packages/ferry/package.json", "pnpm-workspace.yaml"]
+    },
+    {
+      "source": "docs/cli.md",
+      "section": "Reference",
+      "covers": ["packages/ferry/src/cli.ts", "packages/ferry/src/convert.ts", "packages/ferry/src/rows.ts"]
+    },
+    {
+      "source": "docs/formats.md",
+      "section": "Reference",
+      "covers": ["packages/ferry/src/adapters/**", "packages/ferry/src/detect.ts"]
+    },
+    {
+      "source": "docs/contracts.md",
+      "section": "Reference",
+      "covers": ["packages/thread/src/**", "packages/ferry/src/answer.ts", "packages/ferry/src/index.ts"]
+    },
+    { "source": "packages/thread/README.md", "section": "Packages" },
+    { "source": "packages/ferry/README.md", "section": "Packages" },
+    {
+      "source": "docs/contributing.md",
+      "section": "Contribute",
+      "covers": ["package.json", ".github/workflows/**"]
+    }
+  ],
+  "topics": [
+    { "id": "overview", "title": "What Thread and Ferry own", "source": "docs/README.md#how-it-works" },
+    { "id": "install", "title": "Install packages or build from source", "source": "docs/getting-started.md" },
+    { "id": "cli", "title": "Ferry commands and exit behavior", "source": "docs/cli.md" },
+    { "id": "formats", "title": "Supported formats and fidelity limits", "source": "docs/formats.md" },
+    { "id": "schema", "title": "Canonical schema and compatibility", "source": "docs/contracts.md#schema-and-serialization" },
+    { "id": "identity", "title": "Tool-result and assistant-answer identity", "source": "docs/contracts.md#identity-and-projections" },
+    { "id": "usage", "title": "Token usage and tool-call analysis", "source": "docs/cli.md#usage-and-rows" },
+    { "id": "contributing", "title": "Verification and documentation ownership", "source": "docs/contributing.md" }
+  ]
+}

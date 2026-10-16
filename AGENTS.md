@@ -34,6 +34,15 @@ carries npm's `workspaces` field, so `-w` no longer selects a package.
 - Schema changes are breaking for every adapter: update
   `THREAD_SCHEMA_VERSION` per semver and check each importer/exporter.
 
+## Documentation
+
+`corpus.json` curates the published documentation and MCP topics. Start at
+`docs/README.md`; the CLI contract lives in `docs/cli.md`, adapter fidelity in
+`docs/formats.md`, and schema/identity contracts in `docs/contracts.md`.
+When changing a path named by a document's `covers`, update that document in
+the same change. Run `npm run docs:check` and `npm run docs:build` after docs
+changes. See `docs/contributing.md` for freshness checks and publication limits.
+
 ## Publishing
 
 release-please manages versions/changelogs per package; publishes go through
