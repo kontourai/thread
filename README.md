@@ -3,6 +3,9 @@
 Portable AI conversation layer: a canonical schema for agent conversations and
 a migration CLI that moves transcripts between tools.
 
+Start with the [documentation](docs/README.md) for installation, commands,
+format compatibility, and the limits of conversion and portable references.
+
 | Package | What it is |
 | --- | --- |
 | [`@kontourai/thread`](packages/thread) | Canonical Zod schema for AI conversations — messages, tool calls and results, reasoning, attachments, token usage. |
