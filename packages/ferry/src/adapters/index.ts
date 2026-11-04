@@ -33,3 +33,5 @@ export {
   type GeminiPart,
 } from "./gemini.js";
 export { exportToMarkdown, type MarkdownOptions } from "./markdown.js";
+
+export { importObservations, type ObservationCursor, type ObservationImportOptions, type ObservationImportResult } from "./observations.js";

@@ -77,3 +77,11 @@ folds one Thread at a time while retaining cross-file deduplication. Both
 count assistant usage, distinguish missing records from zero usage, and group
 by model/day/thread/source. They do not reinterpret raw adapter metadata or
 estimate missing token counts. See [usage output](cli.md#usage-and-rows).
+
+## Observed tool events
+
+`ObservedToolEvent` is a standalone source event, not a conversation message.
+Its source ID and ordinal identify its position in a source; its input or
+output is the string the observer wrote, including any truncation or scrubbing
+that already occurred. See [Formats and fidelity](formats.md#observed-tool-event-jsonl-programmatic-api)
+for malformed-record and replay-cursor boundaries.

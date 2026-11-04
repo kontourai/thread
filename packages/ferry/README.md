@@ -84,4 +84,24 @@ markers therefore remain `unknown` rather than being promoted from composed
 examples; adding an error mapping requires an observed writer record and its
 fixture provenance.
 
+### Import tool-event logs
+
+Use `importObservations(content, { sourceId })` to read JSONL logs of tool starts
+and completions into ordered events. Save the cursor and pass it with the full
+file on the next run to receive only new lines. Line arrays must contain only
+complete lines. This is a code API, not a CLI
+conversion.
+
+```js
+import { readFileSync } from "node:fs";
+import { importObservations } from "@kontourai/ferry";
+
+const log = readFileSync("observations.jsonl", "utf8");
+const result = importObservations(log, { sourceId: "my-observation-log" });
+// Store result.events and result.cursor together; inspect result.malformed and result.partial.
+```
+
+See [formats and fidelity](../../docs/formats.md#observed-tool-event-jsonl-programmatic-api)
+for partial lines, rotation, malformed records, and privacy.
+
 License: Apache-2.0
