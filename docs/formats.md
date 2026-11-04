@@ -36,7 +36,7 @@ These APIs do not turn the CLI's line-array path into a file watcher.
 ### Observed tool-event JSONL (programmatic API)
 
 Read an observation log into an ordered list of tool starts and completions.
-These JSONL files are written by the observe hook; they are not conversation
+These JSONL files are written by the continuous-learning observe hook; they are not conversation
 messages. In code, call `importObservations(content, { sourceId })` from
 `@kontourai/ferry`. `detectFormat` identifies the source as
 `observed-tool-events`; the CLI cannot convert it.
@@ -49,14 +49,14 @@ cannot be reconstructed.
 Save the returned cursor with your downstream effects, or deduplicate effects
 by event ID. On the next run, pass the entire file and that cursor to receive
 only new lines. A string's unfinished final line is reported in `partial` and
-left for the next run. Line-array callers must supply complete lines. The
+left for the next run. Line-array callers must supply complete lines without terminators; a final empty array entry is ignored. The
 whole prefix is checked on each replay, so edits and truncation are refused.
 When a file rotates, finish its archived copy with the old source ID and cursor
-before importing the new file with a new, unique source ID.
+before importing the new file with a new, unique source ID. If the archived file ends without a newline, supply its final complete record in a line array after verifying it is complete.
 
 `malformed` counts unreadable complete lines, including `parse_error` records.
 The default limit is 100 per run; set `maxMalformed` to a nonnegative integer
-to change it. Above the limit, nothing is returned; raise the limit to accept
+to change it. Above the limit, the call throws and returns nothing; raise the limit to accept
 the counted omissions. Errors contain no source content. Input and output may
 be sensitive; callers must protect them.
 

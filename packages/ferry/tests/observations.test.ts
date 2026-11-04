@@ -19,8 +19,8 @@ describe("observed tool events", () => {
     expect(new Set(result.events.map(x => x.id)).size).toBe(3);
   });
   it("refuses beyond the malformed bound without exposing content", () => {
-    expect(() => importObservations(source, { sourceId: "source-1", maxMalformed: 0 })).toThrow(/1 records could not be read/);
-    expect(() => importObservations('private-value\n', { sourceId: 'x', maxMalformed: 0 })).toThrow(/^1 records could not be read/);
+    expect(() => importObservations(source, { sourceId: "source-1", maxMalformed: 0 })).toThrow(/1 record could not be read/);
+    expect(() => importObservations('private-value\n', { sourceId: 'x', maxMalformed: 0 })).toThrow(/^1 record could not be read/);
   });
   it("checks source identity, timestamps, complete outputs, and empty cursor digests", () => {
     const start = source.split("\n")[0]!;
@@ -28,8 +28,18 @@ describe("observed tool events", () => {
     expect(importObservations(JSON.stringify({ ...parsed, timestamp: "1" }) + "\n", { sourceId: "a" }).malformed).toBe(1);
     expect(importObservations(JSON.stringify({ ...parsed, event: "tool_complete", input: undefined }) + "\n", { sourceId: "a" }).malformed).toBe(1);
     expect(importObservations(start + "\n", { sourceId: "a" }).events[0]?.id).not.toBe(importObservations(start + "\n", { sourceId: "b" }).events[0]?.id);
-    expect(() => importObservations("", { sourceId: "a", cursor: { version: 1, sourceId: "a", lines: 0, digest: "0".repeat(64) } })).toThrow(/cursor prefix/);
+    expect(() => importObservations("", { sourceId: "a", cursor: { version: 1, sourceId: "a", lines: 0, digest: "0".repeat(64) } })).toThrow(/file or cursor changed/);
     expect(detectFormat('{"event":"parse_error"}\n' + start)).toBe("observed-tool-events");
+  });
+  it("accepts complete line arrays with or without the final delimiter", () => {
+    const lines = source.split("\n");
+    const fromString = importObservations(source, { sourceId: "a" });
+    const fromArray = importObservations(lines, { sourceId: "a" });
+    expect(fromArray).toEqual(fromString);
+    expect(importObservations(lines.slice(0, -1), { sourceId: "a" })).toEqual(fromString);
+    expect(() => importObservations(source, { sourceId: "b", cursor: fromString.cursor })).toThrow(/another sourceId/);
+    const bad = JSON.stringify({ ...JSON.parse(lines[0]!), timestamp: "2026-02-30T03:04:05Z" });
+    expect(importObservations([bad], { sourceId: "a" }).malformed).toBe(1);
   });
   it("does not advance past a partial last line", () => {
     const lines = source.split("\n");
@@ -49,7 +59,7 @@ describe("observed tool events", () => {
     const next = importObservations(source + source.split("\n")[0] + "\n", { sourceId: "source-1", cursor: first.cursor });
     expect(next.events).toHaveLength(1);
     expect(next.events[0]?.id).not.toBe(first.events[0]?.id);
-    expect(() => importObservations(source.replace('Read', 'Edit'), { sourceId: "source-1", cursor: first.cursor })).toThrow(/cursor prefix/);
-    expect(() => importObservations('', { sourceId: "source-1", cursor: first.cursor })).toThrow(/cursor prefix/);
+    expect(() => importObservations(source.replace('Read', 'Edit'), { sourceId: "source-1", cursor: first.cursor })).toThrow(/file or cursor changed/);
+    expect(() => importObservations('', { sourceId: "source-1", cursor: first.cursor })).toThrow(/file or cursor changed/);
   });
 });
