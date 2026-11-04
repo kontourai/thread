@@ -6,6 +6,7 @@
 import { asRecord, tryParseJson } from "./adapters/shared.js";
 
 export type InputFormat =
+  | "observed-tool-events"
   | "claude-code"
   | "codex"
   | "opencode"
@@ -30,6 +31,7 @@ export function detectFormat(content: string): InputFormat | undefined {
     ) {
       return "codex";
     }
+    if (isObservedToolEvent(firstRecord)) return "observed-tool-events";
     if (isClaudeCodeRecord(firstRecord)) {
       return "claude-code";
     }
@@ -45,6 +47,7 @@ export function detectFormat(content: string): InputFormat | undefined {
     for (const line of trimmed.split("\n").slice(0, 200)) {
       const record = asRecord(tryParseJson(line));
       if (!record) continue;
+      if (isObservedToolEvent(record)) return "observed-tool-events";
       if (isClaudeCodeRecord(record)) return "claude-code";
       if (record["type"] === "response_item" || record["type"] === "session_meta") {
         return "codex";
@@ -118,4 +121,11 @@ function isPiRecord(record: Record<string, unknown>): boolean {
   if (record["type"] === "session" && "cwd" in record && "version" in record) return true;
   if (record["type"] === "message" && "message" in record && "parentId" in record) return true;
   return false;
+}
+
+/** Observe-hook events are not conversation messages. */
+function isObservedToolEvent(record: Record<string, unknown>): boolean {
+  return (record["event"] === "tool_start" || record["event"] === "tool_complete") &&
+    typeof record["session"] === "string" && typeof record["tool"] === "string" &&
+    typeof record["timestamp"] === "string" && typeof record["project_id"] === "string";
 }

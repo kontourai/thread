@@ -85,6 +85,8 @@ export function importThreadsWithIdentityObservations(
   };
   let threads: Thread[];
   switch (format) {
+    case "observed-tool-events":
+      throw new Error("Observed tool events require importObservations with a stable sourceId");
     case "claude-code":
       threads = [importFromClaudeCode(content, { onWarn, onMessageIdentity })]; break;
     case "codex":

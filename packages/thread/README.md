@@ -87,3 +87,8 @@ import transcripts from Claude Code, Codex, OpenCode, or ChatGPT exports into
 this format, and to export back out to provider API formats.
 
 License: Apache-2.0
+
+`ObservedToolEvent` represents a standalone observed tool event with source
+identity and ordering, without asserting that it is a conversation turn or a
+paired tool call. Ferry's observation importer documents its provenance and
+replay limits.
