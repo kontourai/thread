@@ -82,3 +82,7 @@ occupy memory; this is not constant-memory conversion. Single-document JSON
 inputs that exceed that path cannot use line-array import and must be split
 first. `usage` and `rows` process files in sequence and release each imported
 file rather than retaining a whole archive; usage retains buckets and dedup IDs.
+
+Observed tool-event JSONL is identified by content, but is not a conversation
+input to the CLI. Use Ferry's programmatic `importObservations` API with a
+stable source ID and cursor; see [Formats and fidelity](formats.md#observed-tool-event-jsonl-programmatic-api).
