@@ -6,7 +6,7 @@ export const ObservedToolEvent = z.object({
   sourceId: z.string().min(1),
   ordinal: z.number().int().positive(),
   timestamp: z.string().min(1),
-  session: z.string().min(1),
+  session: z.string(),
   projectId: z.string(),
   projectName: z.string(),
   event: z.enum(["tool_start", "tool_complete"]),

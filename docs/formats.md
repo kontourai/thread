@@ -33,6 +33,33 @@ append-only, but a later split source record can amend a prior assistant;
 `thread()` is the authoritative snapshot. Finalize at EOF/rotation/close.
 These APIs do not turn the CLI's line-array path into a file watcher.
 
+### Observed tool-event JSONL (programmatic API)
+
+Read an observation log into an ordered list of tool starts and completions.
+These JSONL files are written by the observe hook; they are not conversation
+messages. In code, call `importObservations(content, { sourceId })` from
+`@kontourai/ferry`. `detectFormat` identifies the source as
+`observed-tool-events`; the CLI cannot convert it.
+
+Each `ObservedToolEvent` preserves its source line, timestamp, session,
+project, tool, and the input or output string the hook wrote. The hook may
+already have truncated or scrubbed that string. Missing input and event pairs
+cannot be reconstructed.
+
+Save the returned cursor with your downstream effects, or deduplicate effects
+by event ID. On the next run, pass the entire file and that cursor to receive
+only new lines. A string's unfinished final line is reported in `partial` and
+left for the next run. Line-array callers must supply complete lines. The
+whole prefix is checked on each replay, so edits and truncation are refused.
+When a file rotates, finish its archived copy with the old source ID and cursor
+before importing the new file with a new, unique source ID.
+
+`malformed` counts unreadable complete lines, including `parse_error` records.
+The default limit is 100 per run; set `maxMalformed` to a nonnegative integer
+to change it. Above the limit, nothing is returned; raise the limit to accept
+the counted omissions. Errors contain no source content. Input and output may
+be sensitive; callers must protect them.
+
 ## Identity and usage losses
 
 Ferry assigns deterministic namespaced tool-result IDs only from source record
@@ -74,24 +101,3 @@ arguments, reasoning, and transcript text. Applications own access control,
 retention, and rendering; use the [bounded projections](contracts.md#identity-and-projections)
 when exposing only one result or assistant answer.
 
-### Observed tool-event JSONL (programmatic API)
-
-The legacy observe hook writes separate `tool_start` and `tool_complete`
-records, not conversation messages. `detectFormat` identifies these as
-`observed-tool-events`; use `importObservations(content, { sourceId, cursor?,
-maxMalformed? })` from `@kontourai/ferry`, rather than `importThreads`. It
-returns `events`, `malformed`, and a `cursor`. Each event is an
-`ObservedToolEvent` from `@kontourai/thread`, preserving source order, a
-stable source-and-line identity, timestamp, session, project, event, tool,
-and the strings the hook wrote. The hook already truncates and scrubs its
-strings; omitted input and unpaired events cannot be reconstructed.
-
-Use a stable, unique source ID for each source file. Supply the **entire**
-source again with the last cursor to receive only new records. A changed or
-truncated prefix is refused; use a new source ID for rotation. Persist the
-cursor atomically with the consumer's effects, or deduplicate those effects by
- event ID: an import alone does not commit downstream work. The default bound
-is 100 malformed records per invocation; set `maxMalformed` to an explicit
-nonnegative integer to change it. Bad JSON, partial records, and hook
-`parse_error` records count toward the bound. No raw source is included in
-errors. Input and output are sensitive and must be protected by the caller.

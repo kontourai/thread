@@ -1,3 +1,4 @@
 {"timestamp":"2026-01-02T03:04:05Z","event":"tool_start","tool":"Read","session":"session-example","project_id":"example-hash","project_name":"example","input":"{\"file_path\": \"example.txt\"}"}
 {"timestamp":"2026-01-02T03:04:06Z","event":"tool_complete","tool":"Read","session":"session-example","project_id":"example-hash","project_name":"example","output":"example output"}
 {"timestamp":"2026-01-02T03:04:07Z","event":"parse_error","raw":"synthetic malformed content"}
+{"timestamp":"2026-01-02T03:04:08Z","event":"tool_start","tool":"Read","session":"","project_id":"example-hash","project_name":"example","input":"{}"}

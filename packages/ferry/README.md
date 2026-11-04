@@ -84,26 +84,24 @@ markers therefore remain `unknown` rather than being promoted from composed
 examples; adding an error mapping requires an observed writer record and its
 fixture provenance.
 
+
+### Import tool-event logs
+
+Use `importObservations(content, { sourceId })` to read JSONL logs of tool starts
+and completions into ordered events. Save the cursor and pass it with the full
+file on the next run to receive only new lines. This is a code API, not a CLI
+conversion.
+
+```js
+import { readFileSync } from "node:fs";
+import { importObservations } from "@kontourai/ferry";
+
+const log = readFileSync("observations.jsonl", "utf8");
+const result = importObservations(log, { sourceId: "my-observation-log" });
+// Store result.events and result.cursor together; inspect result.malformed and result.partial.
+```
+
+See [formats and fidelity](../../docs/formats.md#observed-tool-event-jsonl-programmatic-api)
+for partial lines, rotation, malformed records, and privacy.
+
 License: Apache-2.0
-
-### Observed tool-event JSONL (programmatic API)
-
-The legacy observe hook writes separate `tool_start` and `tool_complete`
-records, not conversation messages. `detectFormat` identifies these as
-`observed-tool-events`; use `importObservations(content, { sourceId, cursor?,
-maxMalformed? })` from `@kontourai/ferry`, rather than `importThreads`. It
-returns `events`, `malformed`, and a `cursor`. Each event is an
-`ObservedToolEvent` from `@kontourai/thread`, preserving source order, a
-stable source-and-line identity, timestamp, session, project, event, tool,
-and the strings the hook wrote. The hook already truncates and scrubs its
-strings; omitted input and unpaired events cannot be reconstructed.
-
-Use a stable, unique source ID for each source file. Supply the **entire**
-source again with the last cursor to receive only new records. A changed or
-truncated prefix is refused; use a new source ID for rotation. Persist the
-cursor atomically with the consumer's effects, or deduplicate those effects by
- event ID: an import alone does not commit downstream work. The default bound
-is 100 malformed records per invocation; set `maxMalformed` to an explicit
-nonnegative integer to change it. Bad JSON, partial records, and hook
-`parse_error` records count toward the bound. No raw source is included in
-errors. Input and output are sensitive and must be protected by the caller.

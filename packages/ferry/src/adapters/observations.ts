@@ -10,6 +10,7 @@ export interface ObservationImportOptions { sourceId: string; cursor?: Observati
 export interface ObservationImportResult {
   events: ObservedToolEvent[];
   malformed: number;
+  partial: number;
   cursor: ObservationCursor;
 }
 
@@ -20,30 +21,35 @@ export function importObservations(input: JsonlInput, options: ObservationImport
   const { sourceId, cursor } = options;
   const maxMalformed = options.maxMalformed ?? 100;
   if (typeof sourceId !== "string" || !sourceId.trim() || !Number.isSafeInteger(maxMalformed) || maxMalformed < 0)
-    throw new Error("Invalid observation import options");
+    throw new Error("sourceId must be a non-empty string; maxMalformed must be a nonnegative whole number");
   if (cursor && (cursor.version !== 1 || cursor.sourceId !== sourceId || !Number.isSafeInteger(cursor.lines) || cursor.lines < 0 || !/^[a-f0-9]{64}$/.test(cursor.digest)))
-    throw new Error("Invalid observation cursor");
+    throw new Error("Cursor is not a version-1 cursor for this sourceId");
   const lines = [...toLines(input)];
-  // A trailing newline is a delimiter, not a record.
-  if (lines.at(-1) === "") lines.pop();
-  if (cursor && cursor.lines > lines.length) throw new Error("Observation source prefix changed");
+  // String input may end while the writer is still appending a record.
+  // Line arrays are supplied as complete records by the caller.
+  let partial = 0;
+  if (typeof input === "string") {
+    const tail = lines.pop() ?? "";
+    partial = tail.length > 0 ? 1 : 0;
+  }
+  if (cursor && cursor.lines > lines.length) throw new Error("The file no longer starts with the cursor prefix; finish the old file with this cursor, then use a new sourceId for the new file");
   const hash = createHash("sha256");
   const events: ObservedToolEvent[] = [];
   let malformed = 0;
   const emptyDigest = createHash("sha256").digest("hex");
-  if (cursor?.lines === 0 && cursor.digest !== emptyDigest) throw new Error("Observation source prefix changed");
+  if (cursor?.lines === 0 && cursor.digest !== emptyDigest) throw new Error("The file no longer starts with the cursor prefix; finish the old file with this cursor, then use a new sourceId for the new file");
   for (const [i, line] of lines.entries()) {
     // Length-prefixing makes line boundaries unambiguous, including empty lines.
     hash.update(`${Buffer.byteLength(line, "utf8")}:`).update(line);
     if (cursor && i + 1 === cursor.lines && hash.copy().digest("hex") !== cursor.digest)
-      throw new Error("Observation source prefix changed");
+      throw new Error("The file no longer starts with the cursor prefix; finish the old file with this cursor, then use a new sourceId for the new file");
     if (cursor && i < cursor.lines) continue;
     let v: unknown;
     try { v = JSON.parse(line); } catch { malformed++; continue; }
     if (!v || typeof v !== "object" || Array.isArray(v)) { malformed++; continue; }
     const x = v as Record<string, unknown>;
-    if (typeof x.timestamp !== "string" || !Number.isFinite(Date.parse(x.timestamp)) ||
-        typeof x.session !== "string" || !x.session || typeof x.project_id !== "string" ||
+    if (typeof x.timestamp !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(x.timestamp) || !Number.isFinite(Date.parse(x.timestamp)) ||
+        typeof x.session !== "string" || typeof x.project_id !== "string" ||
         typeof x.project_name !== "string" || (x.event !== "tool_start" && x.event !== "tool_complete") ||
         typeof x.tool !== "string" || (x.input !== undefined && typeof x.input !== "string") ||
         (x.output !== undefined && typeof x.output !== "string") ||
@@ -54,6 +60,6 @@ export function importObservations(input: JsonlInput, options: ObservationImport
       ...(typeof x.input === "string" ? { input: x.input } : {}),
       ...(typeof x.output === "string" ? { output: x.output } : {}) });
   }
-  if (malformed > maxMalformed) throw new Error(`Observation malformed record bound exceeded (${malformed} > ${maxMalformed})`);
-  return { events, malformed, cursor: { version: 1, sourceId, lines: lines.length, digest: hash.digest("hex") } };
+  if (malformed > maxMalformed) throw new Error(`${malformed} records could not be read, more than maxMalformed (${maxMalformed}); nothing was returned`);
+  return { events, malformed, partial, cursor: { version: 1, sourceId, lines: lines.length, digest: hash.digest("hex") } };
 }
