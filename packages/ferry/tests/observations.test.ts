@@ -40,6 +40,10 @@ describe("observed tool events", () => {
     expect(() => importObservations(source, { sourceId: "b", cursor: fromString.cursor })).toThrow(/another sourceId/);
     const bad = JSON.stringify({ ...JSON.parse(lines[0]!), timestamp: "2026-02-30T03:04:05Z" });
     expect(importObservations([bad], { sourceId: "a" }).malformed).toBe(1);
+    for (const [date, malformed] of [["1900-02-29", 1], ["2100-02-29", 1], ["2000-02-29", 0]] as const) {
+      const line = JSON.stringify({ ...JSON.parse(lines[0]!), timestamp: date + "T03:04:05Z" });
+      expect(importObservations([line], { sourceId: "a" }).malformed).toBe(malformed);
+    }
   });
   it("does not advance past a partial last line", () => {
     const lines = source.split("\n");
