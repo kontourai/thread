@@ -61,9 +61,10 @@ node packages/ferry/dist/src/cli.js formats
 node packages/ferry/dist/src/cli.js inspect packages/ferry/tests/fixtures/codex-rollout.jsonl
 ```
 
-Ferry declares its Thread dependency as `workspace:^`, so local builds link to
-`packages/thread` in this checkout. The published Ferry package carries a normal
-range (`^<thread version>`) instead; packing rewrites it. Build Thread before
-Ferry; the root recursive build orders them. The root package is private; the
-two members publish separately.
+In this checkout, Ferry uses the local Thread in `packages/thread`: its
+dependency is declared as `workspace:^`, which `pnpm install` links. The
+published Ferry package depends on the matching Thread release
+(`^<thread version>`) instead, because pnpm rewrites the range when the package
+is packed for publishing. Build Thread before Ferry; the root recursive build
+orders them. The root package is private; the two members publish separately.
 Use the [contributor route](contributing.md) for verification and release ownership.

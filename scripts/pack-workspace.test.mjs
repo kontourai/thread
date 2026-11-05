@@ -79,9 +79,11 @@ const localRanges = [
   "FILE:../lib",
   "link:../lib",
   "portal:../lib",
+  "git+file:///opt/lib",
   "../lib",
   "./lib",
   "/opt/lib",
+  "~/lib",
 ];
 for (const range of localRanges) {
   test(`rejects a tarball that still has ${JSON.stringify(range)}`, () => {
