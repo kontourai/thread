@@ -67,4 +67,7 @@ published Ferry package depends on the matching Thread release
 (`^<thread version>`) instead, because pnpm rewrites the range when the package
 is packed for publishing. Build Thread before Ferry; the root recursive build
 orders them. The root package is private; the two members publish separately.
+The development checks use Vitest 5, and the workspace explicitly approves the
+esbuild 0.28.2 platform-binary installer. These tools do not change the canonical
+Thread schema or Ferry's `workspace:^` dependency.
 Use the [contributor route](contributing.md) for verification and release ownership.
