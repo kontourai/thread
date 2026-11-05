@@ -107,8 +107,8 @@ jobs:
           echo "tarball=${TARBALL}" >> "$GITHUB_OUTPUT"
 
       # The argument is an absolute path to a .tgz, which npm reads as a file.
-      # (A bare `packages/thread` would be parsed as the GitHub shorthand
-      # `owner/repo`; that is why the directory form needed a leading `./`.)
+      # If you ever pass a directory here again, prefix it with `./`: npm reads
+      # a bare `packages/thread` as the GitHub repo `packages/thread`.
       - name: Publish
         if: steps.component.outputs.workspace != '' && steps.published.outputs.published != 'true'
         run: npm publish "${{ steps.pack.outputs.tarball }}" --access public --provenance

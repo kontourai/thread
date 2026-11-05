@@ -71,12 +71,16 @@ checks tag/version and main ancestry, and publishes each member separately.
 Do not hand-edit versions or publish locally. Docs publication and npm package
 publication are separate operations.
 
-Ferry depends on thread as `"@kontourai/thread": "workspace:^"`. Keep it that
-way. Release-please cannot edit `pnpm-lock.yaml`, so a version range in
-`package.json` would go out of step with the lockfile on every release and fail
-`pnpm install --frozen-lockfile`. The `workspace:^` form never changes. The
-publish step runs `scripts/pack-workspace.sh`, which packs with pnpm so the
-published ferry depends on `^<thread version>`, and refuses a tarball that still
-contains a `workspace:` range. Publishing then uses `npm publish` on that
-tarball. Do not publish a package directory with `npm publish <dir>`: npm would
-upload `workspace:^` as written.
+Keep ferry's dependency on thread as `"@kontourai/thread": "workspace:^"`.
+Release-please updates version ranges in `package.json` but cannot update
+`pnpm-lock.yaml`. With an ordinary range, every release that bumps thread would
+leave the two out of step, and CI's install step (`pnpm install --frozen-lockfile`,
+which refuses a lockfile that doesn't match) would fail. Release-please leaves
+`workspace:^` alone.
+
+At publish time, `scripts/pack-workspace.sh` packs with pnpm, which writes the
+real range (`^<thread version>`) into the tarball. The script fails if any
+local-only range (`workspace:`, `catalog:`, `link:`, `file:`) is left. `npm
+publish` then uploads that tarball. Never run `npm publish <dir>` on a package
+directory: it uploads `workspace:^` as written, and nobody can install the
+result. `npm run test:scripts` checks the packing script.

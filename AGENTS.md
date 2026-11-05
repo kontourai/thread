@@ -48,7 +48,8 @@ changes. See `docs/contributing.md` for freshness checks and publication limits.
 release-please manages versions/changelogs per package; publishes go through
 the repo's CI on release PRs. Do not hand-edit versions or publish locally.
 
-Ferry declares `@kontourai/thread` as `workspace:^` so release-please never needs
-to edit `pnpm-lock.yaml` (it can't). Packing goes through
-`scripts/pack-workspace.sh` (pnpm rewrites the range, then npm publishes the
-tarball). Never `npm publish <dir>` a workspace package.
+Keep ferry's `@kontourai/thread` dependency as `workspace:^`: release-please
+can't update `pnpm-lock.yaml`, and this range never needs it to. Publish by
+packing with `scripts/pack-workspace.sh` (pnpm turns `workspace:^` into a real
+range), then running `npm publish <tarball>`. Never run `npm publish <dir>` on a
+workspace package.

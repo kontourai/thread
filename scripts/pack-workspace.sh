@@ -8,11 +8,12 @@
 # `pnpm pack` rewrites that to a real range (`^<thread's version>`); `npm pack`
 # and `npm publish <dir>` copy `workspace:^` into the tarball verbatim, and the
 # package then cannot be installed from the registry. Publishing stays on the
-# npm CLI (OIDC trust and provenance belong to it); it just receives this
-# tarball instead of a directory.
+# npm CLI so the existing trusted-publishing (OIDC) and provenance setup does
+# not change; npm just gets this tarball instead of a directory.
 #
-# The last step rejects any tarball that still carries a pnpm-only protocol,
-# so a regression here fails the job rather than publishing a broken package.
+# The last step fails if the packed package.json still has a local-only range
+# (workspace:, catalog:, link:, file:), so a broken pack stops the job instead
+# of publishing a package nobody can install.
 set -euo pipefail
 
 dir="${1:?usage: pack-workspace.sh <package-dir> [<dest-dir>]}"
@@ -41,7 +42,8 @@ if ! tar -xzOf "${tarball}" package/package.json | node -e '
   const bad = [];
   for (const field of fields) {
     for (const [name, range] of Object.entries(manifest[field] ?? {})) {
-      if (/^(workspace|catalog|link|file):/.test(range)) bad.push(`${field}.${name} = ${range}`);
+      // trim() and /i: " file:../x" and "FILE:../x" are still local paths.
+      if (/^(workspace|catalog|link|file):/i.test(String(range).trim())) bad.push(`${field}.${name} = ${range}`);
     }
   }
   if (bad.length > 0) {
