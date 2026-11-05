@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.7.0](https://github.com/kontourai/thread/compare/ferry-v0.6.0...ferry-v0.7.0) (2026-11-05)
+
+
+### Features
+
+* import observed tool events with replay provenance ([#81](https://github.com/kontourai/thread/issues/81)) ([6d2e4bd](https://github.com/kontourai/thread/commit/6d2e4bd52c717b0fc9467bbe9389e1fed74d5d5b))
+
+
+### Fixes
+
+* make release PRs install by declaring ferry's thread dependency as workspace:^ ([#83](https://github.com/kontourai/thread/issues/83)) ([e1410c3](https://github.com/kontourai/thread/commit/e1410c3b18e239b53d9fcfe3f38e64c3ecf0e007))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @kontourai/thread bumped to 0.6.0
+
 ## [0.6.0](https://github.com/kontourai/thread/compare/ferry-v0.5.0...ferry-v0.6.0) (2026-08-25)
 
 
