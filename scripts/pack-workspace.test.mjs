@@ -14,7 +14,7 @@ const script = resolve(import.meta.dirname, "pack-workspace.sh");
  * `lib` as `workspace:^`. `pnpm pack` only resolves that once the workspace is
  * installed. `extraDeps` are added to app's manifest AFTER the install, so
  * pnpm is not asked to resolve deliberately bad ranges; `pnpm pack` does not
- * validate them, which is exactly why the script's guard exists.
+ * validate them, which is why the script has a guard.
  */
 function makeWorkspace(extraDeps = {}) {
   const root = mkdtempSync(join(tmpdir(), "pack-ws-test-"));
@@ -29,13 +29,18 @@ function makeWorkspace(extraDeps = {}) {
     writeFileSync(join(dir, "package.json"), JSON.stringify({ ...manifest, files: ["index.js"] }));
     writeFileSync(join(dir, "index.js"), "export {};\n");
   }
-  const install = spawnSync("pnpm", ["install", "--ignore-scripts", "--no-frozen-lockfile"], { cwd: root, encoding: "utf8" });
-  assert.equal(install.status, 0, install.stdout + install.stderr);
-  if (Object.keys(extraDeps).length > 0) {
-    const file = join(root, "packages", "app", "package.json");
-    const manifest = { ...manifests.app, files: ["index.js"] };
-    manifest.dependencies = { ...manifest.dependencies, ...extraDeps };
-    writeFileSync(file, JSON.stringify(manifest));
+  try {
+    const install = spawnSync("pnpm", ["install", "--ignore-scripts", "--no-frozen-lockfile"], { cwd: root, encoding: "utf8" });
+    assert.equal(install.status, 0, install.stdout + install.stderr);
+    if (Object.keys(extraDeps).length > 0) {
+      const file = join(root, "packages", "app", "package.json");
+      const manifest = { ...manifests.app, files: ["index.js"] };
+      manifest.dependencies = { ...manifest.dependencies, ...extraDeps };
+      writeFileSync(file, JSON.stringify(manifest));
+    }
+  } catch (error) {
+    rmSync(root, { recursive: true, force: true }); // don't leak the directory when setup fails
+    throw error;
   }
   return root;
 }
@@ -67,15 +72,25 @@ test("workspace:^ is packed as a real range and the tarball path is printed", ()
 
 // pnpm leaves these alone on pack, so the guard is the only thing stopping them
 // from being published. The padded and upper-case forms are real bypasses that
-// a plain /^file:/ test lets through.
-for (const range of ["file:../lib", " file:../lib", "FILE:../lib", "link:../lib"]) {
+// a plain /^file:/ test lets through; bare paths and portal: are local too.
+const localRanges = [
+  "file:../lib",
+  " file:../lib",
+  "FILE:../lib",
+  "link:../lib",
+  "portal:../lib",
+  "../lib",
+  "./lib",
+  "/opt/lib",
+];
+for (const range of localRanges) {
   test(`rejects a tarball that still has ${JSON.stringify(range)}`, () => {
     const root = makeWorkspace({ "@t/other": range });
     try {
       const run = pack(root);
       assert.equal(run.status, 1, `expected exit 1, got ${run.status}\n${run.stdout}\n${run.stderr}`);
       assert.equal(run.stdout, "", "a rejected pack must not print a tarball path");
-      assert.match(run.stderr, /ships unresolved ranges/);
+      assert.match(run.stderr, /has local-only ranges/);
       assert.ok(run.stderr.includes(`dependencies.@t/other = ${range}`), run.stderr);
     } finally {
       rmSync(root, { recursive: true, force: true });

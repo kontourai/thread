@@ -93,9 +93,9 @@ jobs:
           fi
 
       # pnpm packs, npm publishes. ferry depends on thread as `workspace:^`, and
-      # only `pnpm pack` rewrites that to a real range; `npm publish <dir>`
-      # would upload the literal `workspace:^`, which no consumer can install.
-      # The script also fails if the tarball still carries such a range.
+      # `pnpm pack` rewrites that to a real range; `npm publish <dir>` would
+      # upload the literal `workspace:^`, which no consumer can install. The
+      # script also fails if the tarball still has a local-only range.
       # (`-w` is not an option either: it reads package.json's npm-only
       # `workspaces` field, which this repo no longer carries.)
       - name: Pack
@@ -106,9 +106,8 @@ jobs:
           echo "Packed ${TARBALL}"
           echo "tarball=${TARBALL}" >> "$GITHUB_OUTPUT"
 
-      # The argument is an absolute path to a .tgz, which npm reads as a file.
-      # If you ever pass a directory here again, prefix it with `./`: npm reads
-      # a bare `packages/thread` as the GitHub repo `packages/thread`.
+      # The argument is an absolute .tgz path. Don't pass a package directory
+      # here; see docs/contributing.md.
       - name: Publish
         if: steps.component.outputs.workspace != '' && steps.published.outputs.published != 'true'
         run: npm publish "${{ steps.pack.outputs.tarball }}" --access public --provenance

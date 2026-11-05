@@ -4,16 +4,16 @@
 # usage: scripts/pack-workspace.sh <package-dir> [<dest-dir>]
 #
 # Why pnpm packs and npm publishes: ferry depends on `@kontourai/thread` as
-# `workspace:^` so release-please never has to touch pnpm-lock.yaml. Only
-# `pnpm pack` rewrites that to a real range (`^<thread's version>`); `npm pack`
-# and `npm publish <dir>` copy `workspace:^` into the tarball verbatim, and the
+# `workspace:^` so release-please never has to touch pnpm-lock.yaml. `pnpm pack`
+# rewrites that to a real range (`^<thread's version>`); `npm pack` and
+# `npm publish <dir>` copy `workspace:^` into the tarball verbatim, and the
 # package then cannot be installed from the registry. Publishing stays on the
 # npm CLI so the existing trusted-publishing (OIDC) and provenance setup does
 # not change; npm just gets this tarball instead of a directory.
 #
 # The last step fails if the packed package.json still has a local-only range
-# (workspace:, catalog:, link:, file:), so a broken pack stops the job instead
-# of publishing a package nobody can install.
+# (workspace:, catalog:, link:, file:, portal:, git+file:, or a bare path), so a
+# broken pack stops the job instead of publishing a package nobody can install.
 set -euo pipefail
 
 dir="${1:?usage: pack-workspace.sh <package-dir> [<dest-dir>]}"
@@ -42,12 +42,13 @@ if ! tar -xzOf "${tarball}" package/package.json | node -e '
   const bad = [];
   for (const field of fields) {
     for (const [name, range] of Object.entries(manifest[field] ?? {})) {
-      // trim() and /i: " file:../x" and "FILE:../x" are still local paths.
-      if (/^(workspace|catalog|link|file):/i.test(String(range).trim())) bad.push(`${field}.${name} = ${range}`);
+      // A local-only range: a pnpm/local protocol, or a bare path. trim() and /i
+      // because " file:../x" and "FILE:../x" are still local paths.
+      if (/^(?:(?:workspace|catalog|link|file|portal|git\+file):|\.{0,2}\/|~\/)/i.test(String(range).trim())) bad.push(`${field}.${name} = ${range}`);
     }
   }
   if (bad.length > 0) {
-    console.error(`pack-workspace: ${manifest.name}@${manifest.version} ships unresolved ranges:\n  ${bad.join("\n  ")}`);
+    console.error(`pack-workspace: ${manifest.name}@${manifest.version} has local-only ranges npm cannot install:\n  ${bad.join("\n  ")}`);
     process.exit(1);
   }
 '; then

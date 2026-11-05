@@ -51,5 +51,5 @@ the repo's CI on release PRs. Do not hand-edit versions or publish locally.
 Keep ferry's `@kontourai/thread` dependency as `workspace:^`: release-please
 can't update `pnpm-lock.yaml`, and this range never needs it to. Publish by
 packing with `scripts/pack-workspace.sh` (pnpm turns `workspace:^` into a real
-range), then running `npm publish <tarball>`. Never run `npm publish <dir>` on a
-workspace package.
+range), then running `npm publish <tarball>`. Never run `npm publish` on a
+workspace package directory.
