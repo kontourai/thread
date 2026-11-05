@@ -19,6 +19,7 @@ allowBuilds:
   # postinstall selects the platform binary; without it esbuild falls back to
   # its slower JS implementation. Bump this pin together with the dependency.
   esbuild@0.27.7: true
+  esbuild@0.28.2: true
 
 # Third-party releases must be at least 24 hours old, including during frozen
 # installs: pnpm checks lockfile entries against supply-chain policies.

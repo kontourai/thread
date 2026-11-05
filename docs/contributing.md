@@ -74,6 +74,10 @@ reported as warnings instead of failing. That exception depends on who opened
 the pull request, not on what it contains. Any other pull request that changes
 those files must still update `getting-started.md`.
 
+Workflow setup uses pnpm/action-setup 6.1.0, release-please-action 5, and
+create-github-app-token 3.3.0. These updates preserve the existing trigger,
+permission, and publishing boundaries.
+
 The ordinary CI runs verification on Node 22/24 and package publish-path dry
 runs. Release-please manages each package's versions/changelogs; the publishing
 workflow handles `thread-v*` and `ferry-v*` component tags, verifies the checkout,
