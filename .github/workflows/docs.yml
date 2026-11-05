@@ -15,13 +15,12 @@ jobs:
     uses: kontourai/.github/.github/workflows/docs-gate.yml@main
     with:
       corpus-ref: b8ecf4cd4c6482bb804cdeea617ebe2d9b78ab05
-      # A release PR only bumps version fields and changelogs, which can never
-      # need a getting-started edit, yet getting-started.md covers both
-      # package.json files. So on the release bot's own same-repo PR, a stale
-      # doc is reported as a warning instead of failing. Every other PR,
-      # merge-group run and push keeps the strict check. All four conditions
-      # must hold: the author is the release app, the branch is its release
-      # branch, the PR comes from this repository, and the event is a PR.
+      # A release PR bumps version fields and changelogs. That does not change
+      # what getting-started.md says, but the page covers both package.json
+      # files. So on the release bot's own same-repo PR, stale documents are
+      # reported as warnings instead of failing. Every other pull request keeps
+      # the strict check; pushes and merge-group runs are unchanged. This
+      # looks at who opened the PR, not at what it contains.
       advisory-freshness: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login == 'kontourai-releases[bot]' && github.event.pull_request.head.ref == 'release-please--branches--main' && github.event.pull_request.head.repo.full_name == github.repository }}
   pages:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
