@@ -47,3 +47,8 @@ changes. See `docs/contributing.md` for freshness checks and publication limits.
 
 release-please manages versions/changelogs per package; publishes go through
 the repo's CI on release PRs. Do not hand-edit versions or publish locally.
+
+Ferry declares `@kontourai/thread` as `workspace:^` so release-please never needs
+to edit `pnpm-lock.yaml` (it can't). Packing goes through
+`scripts/pack-workspace.sh` (pnpm rewrites the range, then npm publishes the
+tarball). Never `npm publish <dir>` a workspace package.

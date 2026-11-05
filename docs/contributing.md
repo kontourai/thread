@@ -70,3 +70,13 @@ workflow handles `thread-v*` and `ferry-v*` component tags, verifies the checkou
 checks tag/version and main ancestry, and publishes each member separately.
 Do not hand-edit versions or publish locally. Docs publication and npm package
 publication are separate operations.
+
+Ferry depends on thread as `"@kontourai/thread": "workspace:^"`. Keep it that
+way. Release-please cannot edit `pnpm-lock.yaml`, so a version range in
+`package.json` would go out of step with the lockfile on every release and fail
+`pnpm install --frozen-lockfile`. The `workspace:^` form never changes. The
+publish step runs `scripts/pack-workspace.sh`, which packs with pnpm so the
+published ferry depends on `^<thread version>`, and refuses a tarball that still
+contains a `workspace:` range. Publishing then uses `npm publish` on that
+tarball. Do not publish a package directory with `npm publish <dir>`: npm would
+upload `workspace:^` as written.
