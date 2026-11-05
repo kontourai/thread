@@ -80,7 +80,7 @@ which refuses a lockfile that doesn't match) would fail. Release-please leaves
 
 At publish time, `scripts/pack-workspace.sh` packs with pnpm, which writes the
 real range (`^<thread version>`) into the tarball. The script fails if any
-local-only range (`workspace:`, `catalog:`, `link:`, `file:`, `portal:`, or a
-bare path) is left. `npm publish` then uploads that tarball. Never run
+local-only range (`workspace:`, `catalog:`, `link:`, `file:`, `portal:`,
+`git+file:`, or a bare path such as `../lib`) is left. `npm publish` then uploads that tarball. Never run
 `npm publish` on a package directory: it uploads `workspace:^` as written, and
 nobody can install the result. `npm run test:scripts` checks the packing script.
