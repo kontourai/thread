@@ -64,6 +64,15 @@ have GitHub Actions selected as its Pages source. Hub registration, hosted
 deployment, and aggregate MCP discovery require their own configuration and
 successful hosted runs; a local build proves only local output.
 
+The gate's freshness check fails a pull request that changes a file a document
+covers without changing that document. Release pull requests are the one
+exception: every release bumps the `version` in both `package.json` files,
+which `getting-started.md` covers, so for the release bot's own pull request
+(`release-please--branches--main`) the same check reports a warning and does
+not fail. Corpus can only cover whole files, so it cannot tell a version bump
+from a real change to the dependencies. Any other pull request that changes
+those files still has to update `getting-started.md`.
+
 The ordinary CI runs verification on Node 22/24 and package publish-path dry
 runs. Release-please manages each package's versions/changelogs; the publishing
 workflow handles `thread-v*` and `ferry-v*` component tags, verifies the checkout,
