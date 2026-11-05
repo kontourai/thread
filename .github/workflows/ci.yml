@@ -45,11 +45,11 @@ jobs:
   # this job the publish path was exercised for the first time by a release --
   # against a tree pnpm installed, with a hoisting layout npm never produced.
   #
-  # This mirrors publish-npm.yml's actual operation: `npm publish <directory>`,
-  # not `-w`. The `-w` flag reads package.json's npm-only `workspaces` field,
-  # which this repo no longer carries. The `./` prefix is copied deliberately:
-  # a bare `packages/thread` is parsed as the GitHub shorthand `owner/repo`,
-  # which is the defect this job found on its first run.
+  # This mirrors publish-npm.yml's actual operation: pack with
+  # scripts/pack-workspace.sh (pnpm, so `workspace:^` becomes a real range),
+  # then `npm publish <tarball>`. Not `-w`: that flag reads package.json's
+  # npm-only `workspaces` field, which this repo no longer carries. Not
+  # `npm publish <directory>` either: it would upload `workspace:^` as written.
   publish-path:
     name: Publish path (dry run)
     runs-on: ubuntu-latest
@@ -95,8 +95,14 @@ jobs:
           # moment npm exits non-zero -- which is every ordinary pull request --
           # leaving every assertion below unreachable. Capturing the status
           # marks the failure handled so the assertions actually run.
+          #
+          # Pack with the same script the real publish uses, then dry-run
+          # `npm publish` on that tarball. Packing fails here if the tarball
+          # still has a local-only range (`workspace:`, `file:`, ...).
+          TARBALL="$(scripts/pack-workspace.sh "./${WORKSPACE}" "${RUNNER_TEMP}/pack")"
+          echo "Packed ${TARBALL}"
           STATUS=0
-          npm publish "./${WORKSPACE}" --dry-run --access public > /tmp/publish-dry-run.log 2>&1 || STATUS=$?
+          npm publish "${TARBALL}" --dry-run --access public > /tmp/publish-dry-run.log 2>&1 || STATUS=$?
           cat /tmp/publish-dry-run.log
 
           if ! grep -q "Tarball Contents" /tmp/publish-dry-run.log; then

@@ -11,7 +11,7 @@ importers:
   packages/ferry:
     dependencies:
       '@kontourai/thread':
-        specifier: ^0.5.0
+        specifier: workspace:^
         version: link:../thread
       commander:
         specifier: ^15.0.0

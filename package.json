@@ -12,6 +12,7 @@
     "build": "pnpm -r run build",
     "typecheck": "pnpm -r run typecheck",
     "test": "pnpm -r run test",
-    "verify": "npm run build && npm run typecheck && npm run test"
+    "test:scripts": "node --test scripts/pack-workspace.test.mjs",
+    "verify": "npm run build && npm run typecheck && npm run test && npm run test:scripts"
   }
 }

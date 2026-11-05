@@ -43,7 +43,7 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@kontourai/thread": "^0.5.0",
+    "@kontourai/thread": "workspace:^",
     "commander": "^15.0.0",
     "zod": "^4.4.3"
   },
