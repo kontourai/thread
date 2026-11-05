@@ -68,7 +68,7 @@ The gate's freshness check fails a pull request that changes a file a document
 covers but not the document. Release pull requests are the exception. A release
 bumps `version` in the `package.json` files, which `getting-started.md` covers,
 and Corpus matches whole files, so it cannot tell a version bump from a change
-to the dependencies. On the pull request the release bot opens from its own
+to the dependencies. On the pull request that the release bot (Release Please) opens from its own
 `release-please--branches--main` branch in this repository, stale documents are
 reported as warnings instead of failing. That exception depends on who opened
 the pull request, not on what it contains. Any other pull request that changes
