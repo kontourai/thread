@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/kontourai/thread/compare/thread-v0.5.0...thread-v0.6.0) (2026-11-05)
+
+
+### Features
+
+* import observed tool events with replay provenance ([#81](https://github.com/kontourai/thread/issues/81)) ([6d2e4bd](https://github.com/kontourai/thread/commit/6d2e4bd52c717b0fc9467bbe9389e1fed74d5d5b))
+
 ## [0.5.0](https://github.com/kontourai/thread/compare/thread-v0.4.0...thread-v0.5.0) (2026-08-25)
 
 
