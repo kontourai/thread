@@ -524,7 +524,12 @@ export function restoreClaudeCodeImporter(
   options: Pick<ClaudeCodeImportOptions, "onWarn"> = {},
 ): IncrementalImporter<ClaudeCodeImporterState> {
   if (state.format !== "claude-code") throw new Error("Invalid Claude Code importer state");
-  return claudeImporter(structuredClone(state), options.onWarn);
+  const restored = structuredClone(state);
+  // State saved before subagent detection existed has no firstEventSeen. If
+  // it already imported events, its first event was decided (as a main
+  // session), so a later sidechain record must not reclassify the file.
+  if (restored.firstEventSeen === undefined && restored.eventCount > 0) restored.firstEventSeen = true;
+  return claudeImporter(restored, options.onWarn);
 }
 
 function claudeImporter(

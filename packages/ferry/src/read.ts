@@ -78,19 +78,30 @@ export class FerryFormatDetectionError extends Error {
  * cuts real records in two (observed: 174 broken fragments in one rollout).
  */
 export async function* readJsonlLines(path: string): AsyncGenerator<string> {
-  let carry = "";
-  for await (const chunk of createReadStream(path, { encoding: "utf8" })) {
-    const text = carry + (chunk as string);
+  yield* splitJsonlChunks(createReadStream(path, { encoding: "utf8" }) as AsyncIterable<string>);
+}
+
+/**
+ * Splits text chunks into lines in linear time. A partial line is kept as an
+ * array of pieces and joined once, and each chunk is searched for `\n` only
+ * once: re-scanning an ever-growing carry string made one 32 MiB line take
+ * about 12 seconds.
+ */
+export async function* splitJsonlChunks(chunks: AsyncIterable<string> | Iterable<string>): AsyncGenerator<string> {
+  let pieces: string[] = [];
+  for await (const chunk of chunks) {
     let start = 0;
-    let newline = text.indexOf("\n", start);
+    let newline = chunk.indexOf("\n");
     while (newline !== -1) {
-      yield stripCarriageReturn(text.slice(start, newline));
+      pieces.push(chunk.slice(start, newline));
+      yield stripCarriageReturn(pieces.join(""));
+      pieces = [];
       start = newline + 1;
-      newline = text.indexOf("\n", start);
+      newline = chunk.indexOf("\n", start);
     }
-    carry = text.slice(start);
+    if (start < chunk.length) pieces.push(chunk.slice(start));
   }
-  if (carry.length > 0) yield stripCarriageReturn(carry);
+  if (pieces.length > 0) yield stripCarriageReturn(pieces.join(""));
 }
 
 function stripCarriageReturn(line: string): string {

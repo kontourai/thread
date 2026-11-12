@@ -8,15 +8,19 @@ import { mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { Thread } from "@kontourai/thread";
 import {
+  createClaudeCodeImporter,
+  DEFAULT_STREAM_THRESHOLD_BYTES,
   FerryInputTooLargeError,
   importFromClaudeCode,
+  restoreClaudeCodeImporter,
   importThreadsFromFile,
   importThreadsWithIdentityObservations,
   readJsonlLines,
 } from "../src/index.js";
+import { splitJsonlChunks } from "../src/read.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixturesDir = join(here, "fixtures");
@@ -69,7 +73,45 @@ describe("readJsonlLines", () => {
   });
 });
 
+describe("splitJsonlChunks", () => {
+  it("scans each byte of one long line a bounded number of times", async () => {
+    // One 2 MiB line arriving in 4 KiB chunks. Re-scanning a growing carry
+    // string reads about 512 chunks x 1 MiB on average = 512 MiB; a linear
+    // splitter reads about 2 MiB. Bytes scanned are counted via the receiver
+    // of every String#indexOf call made while splitting.
+    const chunkSize = 4096;
+    const total = 2 * 1024 * 1024;
+    const chunks = Array.from({ length: total / chunkSize }, () => "a".repeat(chunkSize));
+    chunks.push("\n");
+    let scanned = 0;
+    const original = String.prototype.indexOf;
+    const spy = vi.spyOn(String.prototype, "indexOf").mockImplementation(function (this: string, ...args) {
+      scanned += String(this).length;
+      return original.apply(this, args as [string, number?]);
+    });
+    const lines: string[] = [];
+    try {
+      for await (const line of splitJsonlChunks(chunks)) lines.push(line);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(lines).toEqual(["a".repeat(total)]);
+    expect(scanned).toBeGreaterThan(0); // the seam was reached
+    expect(scanned).toBeLessThan(4 * total);
+  });
+});
+
 describe("importThreadsFromFile", () => {
+  it("defaults to a 64 MiB threshold and reads a file exactly at the threshold whole", async () => {
+    expect(DEFAULT_STREAM_THRESHOLD_BYTES).toBe(67_108_864);
+    const path = join(dir, "boundary.jsonl");
+    const content = codexRollout(3);
+    writeFileSync(path, content);
+    const size = Buffer.byteLength(content);
+    expect((await importThreadsFromFile(path, "codex", { streamThresholdBytes: size })).read).toBe("whole");
+    expect((await importThreadsFromFile(path, "codex", { streamThresholdBytes: size - 1 })).read).toBe("streamed");
+  });
+
   it("streams a file above the threshold and matches the whole-file import exactly", async () => {
     const path = join(dir, "rollout.jsonl");
     const content = codexRollout(2_000, 200);
@@ -171,6 +213,30 @@ describe("Claude Code subagent transcripts (#35)", () => {
     const result = importThreadsWithIdentityObservations(source, "claude-code");
     expect(result.messageIdentityObservations.length).toBeGreaterThan(0);
     expect(result.messageIdentityObservations.every((o) => o.standing === "adapter-fallback")).toBe(true);
+  });
+
+  it("imports only the transcript's own agent; a nested agent's records need includeSidechains", () => {
+    const nested = source.trim().split("\n").map((line) => line.replaceAll("fixture-id-0002", "fixture-id-nested")
+      .replaceAll('"uuid":"bbbbbbbb', '"uuid":"nnnnnnnn').replaceAll("msg_fixture", "msg_nested"));
+    const lines = [...source.trim().split("\n"), ...nested];
+    const own = importFromClaudeCode(lines);
+    expect(own.messages).toHaveLength(4);
+    expect(own.messages.every((m) => m.metadata?.["agentId"] === "fixture-id-0002")).toBe(true);
+    const all = importFromClaudeCode(lines, { includeSidechains: true });
+    expect(all.id).toBe(own.id);
+    expect(all.messages.filter((m) => m.metadata?.["agentId"] === "fixture-id-nested")).toHaveLength(4);
+  });
+
+  it("keeps a restored pre-#92 main-session state from turning into a subagent transcript", () => {
+    const importer = createClaudeCodeImporter();
+    importer.pushLines(fixture("claude-code-provenance.jsonl").trim().split("\n"));
+    const saved = JSON.parse(JSON.stringify(importer.state())) as Record<string, unknown>;
+    delete saved["firstEventSeen"]; // as written before subagent detection existed
+    const restored = restoreClaudeCodeImporter(saved as unknown as Parameters<typeof restoreClaudeCodeImporter>[0]);
+    const before = restored.thread().messages.length;
+    restored.pushLines(source.trim().split("\n"));
+    expect(restored.thread().id).toBe("11111111-2222-4333-8444-555555555555");
+    expect(restored.thread().messages).toHaveLength(before);
   });
 
   it("still skips inline sidechains in a main session by default", () => {
