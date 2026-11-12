@@ -83,7 +83,11 @@ it cannot independently prove the producer's claim. Only a producer that read
 the exact owner-issued thread/message tuple should create that fact.
 
 Ferry's additive `importThreadsWithIdentityObservations` returns Threads plus
-serializable observations collected while adapters still know source standing.
+serializable observations collected while adapters still know source standing,
+and typed, counted `losses` for source lines it could not import.
+`importThreadsFromFile` returns the same result for a file path, streaming
+large JSONL instead of reading it into one string (see
+[large files](formats.md#large-files-and-counted-losses)).
 Duplicate tuples downgrade to adapter-fallback. `findObservedMessageIdentity`
 refuses missing, malformed, ambiguous, or unobserved matches. Re-importing
 canonical JSON supplies adapter-fallback standing; metadata or a convincing
