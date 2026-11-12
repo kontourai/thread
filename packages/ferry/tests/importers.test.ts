@@ -398,6 +398,7 @@ describe("codex importer", () => {
       "tool",
       "assistant",
       "tool",
+      "user",
       "assistant",
     ]);
 
@@ -433,16 +434,25 @@ describe("codex importer", () => {
     ]);
   });
 
-  it("keeps non-event inter-agent chatter skipped and encrypted reasoning out", () => {
-    const text = JSON.stringify(thread.messages);
-    expect(text).not.toContain("inter-agent chatter");
-    expect(text).not.toContain("opaque-not-imported");
+  it("imports an inter-agent message as agent-authored input and keeps encrypted reasoning out", () => {
+    // Real rollouts deliver a parent's brief to a child session (and a
+    // child's report to its parent) as a response_item agent_message; it is
+    // input to this session, authored by another agent. The fixture line
+    // predates that observation and says "must be skipped" in its text.
+    const inbound = thread.messages[5];
+    expect(inbound).toMatchObject({
+      role: "user",
+      content: [{ type: "text", text: "inter-agent chatter that must be skipped" }],
+      origin: { kind: "agent", evidence: "codex:agent_message" },
+      metadata: { codexAgentMessage: { author: "agent-a", recipient: "agent-b" } },
+    });
+    expect(JSON.stringify(thread.messages)).not.toContain("opaque-not-imported");
   });
 
   it("normalizes modern and historical token counts and preserves their complete raw metadata", () => {
     const first = thread.messages[1];
     const modern = thread.messages[3];
-    const second = thread.messages[5];
+    const second = thread.messages[6];
     if (first?.role !== "assistant" || modern?.role !== "assistant" || second?.role !== "assistant") {
       throw new Error("expected assistant messages");
     }

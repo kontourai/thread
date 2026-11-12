@@ -137,9 +137,10 @@ describe("ferry CLI (built binary)", () => {
       "thread",
     ]);
     const thread = JSON.parse(out);
-    // Bumped to 1.2.0 by the additive ToolResult identity contract
-    // (repo rule: a schema change updates THREAD_SCHEMA_VERSION per semver).
-    expect(thread.schemaVersion).toBe("1.2.0");
+    // Bumped to 1.3.0 by the additive message `origin` field (1.2.0 added
+    // ToolResult identity). Repo rule: a schema change updates
+    // THREAD_SCHEMA_VERSION per semver.
+    expect(thread.schemaVersion).toBe("1.3.0");
     expect(thread.metadata.source).toBe("codex");
   });
 
