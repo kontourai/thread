@@ -5,12 +5,10 @@
  * changed tuple is explicitly adapter-fallback; this helper never promotes an
  * adapter-generated Message.id by recognizing its format.
  */
-import {
-  SCHEMA_NAME,
-  THREAD_SCHEMA_VERSION,
-} from "@kontourai/thread";
+import { SCHEMA_NAME } from "@kontourai/thread";
 import {
   MessageIdentityObservation,
+  THREAD_ANSWER_REF_SCHEMA_VERSION,
   createObservedMessageIdentity,
 } from "@kontourai/thread/answer";
 import type { Message } from "@kontourai/thread";
@@ -42,7 +40,7 @@ export const ferryMessageIdentityObservation = (
   }
   return MessageIdentityObservation.parse({
     authority: SCHEMA_NAME,
-    schemaVersion: THREAD_SCHEMA_VERSION,
+    schemaVersion: THREAD_ANSWER_REF_SCHEMA_VERSION,
     kind: "message-identity-observation",
     standing: "adapter-fallback",
     threadId: message.threadId,
@@ -57,7 +55,7 @@ export const ferryMessageIdentityObservationFromStanding = (
   if (standing === "observed") return createObservedMessageIdentity(message.threadId, message.id);
   return MessageIdentityObservation.parse({
     authority: SCHEMA_NAME,
-    schemaVersion: THREAD_SCHEMA_VERSION,
+    schemaVersion: THREAD_ANSWER_REF_SCHEMA_VERSION,
     kind: "message-identity-observation",
     standing,
     threadId: message.threadId,

@@ -60,6 +60,25 @@
  *   The event is canonical so its adjacent `agent_reasoning` and token-count
  *   window remain together; that immediate duplicate response text is skipped.
  *   Equal text at any other position is retained.
+ * - Input-side messages carry a derived `origin`. `developer` and `system`
+ *   items become `system` messages (harness, or hook when the item's
+ *   provenance says so); before this they were imported as `user`. A user
+ *   item's `internal_chat_message_metadata_passthrough` provenance decides
+ *   harness/hook/task-notification when present, else a message that is
+ *   entirely harness wrapper blocks (`<environment_context>`, the AGENTS.md
+ *   heading, …) is harness. What remains was submitted through the user-input
+ *   path, and the session's `session_meta.source` decides who submitted it:
+ *   `subagent` means the parent agent (`agent`), the interactive `cli` means a
+ *   person (`human`), and anything else (`vscode`, `exec`, app-server clients)
+ *   is `unknown`, because those clients relay both people and orchestrators.
+ *   In a forked subagent rollout, records whose `ordinal` is below
+ *   `subagent_history_start_ordinal` are the parent's history and take the
+ *   parent `session_meta`'s source (a record without `ordinal` uses its
+ *   0-based position).
+ * - `response_item` `agent_message` items (inter-agent messages delivered to
+ *   this session, `{author, recipient, content}`) are imported as `user`
+ *   messages with origin `agent` and `metadata.codexAgentMessage`; they were
+ *   previously dropped.
  */
 
 import { z } from "zod";
@@ -68,11 +87,13 @@ import type {
   AssistantMessage,
   ContentPart,
   Message,
+  MessageOrigin,
   Thread,
   TokenUsage,
 } from "@kontourai/thread";
 import { THREAD_SCHEMA_VERSION } from "@kontourai/thread";
 import { asRecord, deterministicToolResultId, parseTimestamp, toLines, tryParseJson, type JsonlInput } from "./shared.js";
+import { wholeEnvelope, type EnvelopeVocabulary } from "./origin.js";
 import type { MessageIdentityObservationSink } from "../answer.js";
 
 const RolloutLine = z
@@ -126,11 +147,24 @@ interface CodexReducerState {
   pendingToolNames?: Record<string, string>;
   /** Source-record ordinal, retained so restored importers keep result ids stable. */
   recordOrdinal?: number;
+  /** True once the first session_meta is read, even if it names no source. */
+  sessionMetaSeen?: boolean;
+  /** `session_meta.source` of this session (the first session_meta), as a label. */
+  sessionSource?: string;
+  /** Source of the most recent session_meta; a forked rollout's parent history uses it. */
+  latestMetaSource?: string;
+  /** First session_meta's `subagent_history_start_ordinal`, when forked. */
+  historyStartOrdinal?: number;
+  /** Message indices whose origin waits on this session's session_meta. */
+  pendingOriginIndices?: number[];
 }
 
 function codexThread(state: CodexReducerState): Thread {
   if (state.importableItemCount === 0) throw new Error("No Codex importable items found in input");
   const messages = structuredClone(state.messages);
+  // A pure projection: origins still waiting on session_meta read as they
+  // would if the input ended here.
+  applyPendingCodexOrigins(state, messages);
   // Pending assistant output is intentionally kept uncommitted in reducer
   // state so a following record can still join its Responses turn.
   if (state.pending?.content.length) {
@@ -183,6 +217,14 @@ function stepCodex(
   const payload = asRecord(record.payload);
   if (!payload) { state.duplicateAgentMessageText = undefined; return; }
   if (record.type === "session_meta") {
+    const source = codexSourceLabel(payload["source"]);
+    if (!state.sessionMetaSeen) {
+      state.sessionMetaSeen = true;
+      state.sessionSource = source;
+      const start = payload["subagent_history_start_ordinal"];
+      if (typeof start === "number" && Number.isInteger(start) && start >= 0) state.historyStartOrdinal = start;
+    }
+    state.latestMetaSource = source;
     if (typeof payload["id"] === "string") {
       state.observedSessionId ??= payload["id"];
       state.sessionId ??= payload["id"];
@@ -231,7 +273,34 @@ function stepCodex(
       if (part.type === "text") append({ type: "text", text: part.text });
       else if (part.type === "image") append({ type: "image", image: part });
     }
-    else { flush(); state.messages.push({ id: nextId(), threadId, role: role === "system" ? "system" : "user", timestamp, content: parts }); }
+    else {
+      flush();
+      // Modern rollouts stamp each record with a 0-based `ordinal`, the index
+      // `subagent_history_start_ordinal` counts in; older ones have none.
+      const sourceOrdinal = typeof record["ordinal"] === "number" ? record["ordinal"] : recordOrdinal - 1;
+      const origin = codexInputOrigin(payload, role, parts, state, sourceOrdinal);
+      const isSystem = role === "system" || role === "developer";
+      state.messages.push({
+        id: nextId(), threadId, role: isSystem ? "system" : "user", timestamp, content: parts,
+        ...(origin === "pending" ? {} : { origin }),
+      });
+      if (origin === "pending") (state.pendingOriginIndices ??= []).push(state.messages.length - 1);
+    }
+  } else if (type === "agent_message" && record.type === "response_item") {
+    // An inter-agent message delivered to this session. It is input, not
+    // this agent's output, so it is a user-role turn whose author is an agent.
+    const parts = extractMessageParts(payload["content"]);
+    if (!parts.length) return;
+    flush();
+    const author = typeof payload["author"] === "string" ? payload["author"] : undefined;
+    const recipient = typeof payload["recipient"] === "string" ? payload["recipient"] : undefined;
+    state.messages.push({
+      id: nextId(), threadId, role: "user", timestamp, content: parts,
+      origin: { kind: "agent", evidence: "codex:agent_message" },
+      ...(author !== undefined || recipient !== undefined
+        ? { metadata: { codexAgentMessage: { ...(author !== undefined ? { author } : {}), ...(recipient !== undefined ? { recipient } : {}) } } }
+        : {}),
+    });
   } else if (type === "reasoning") {
     const texts = (Array.isArray(payload["summary"]) ? payload["summary"] : []).map(asRecord).filter((s): s is Record<string, unknown> => s !== undefined).map((s) => s["text"]).filter((t): t is string => typeof t === "string" && t.length > 0);
     if (texts.length) append({ type: "reasoning", reasoning: { type: "reasoning", text: texts.join("\n") } });
@@ -419,6 +488,116 @@ function reconcileCodexStateMessageIds(state: CodexReducerState): void {
   }
 }
 
+/** Wrappers Codex writes around context it injects into the user role. */
+const CODEX_ENVELOPES: EnvelopeVocabulary = {
+  tags: new Set([
+    "environment_context",
+    "user_instructions",
+    "INSTRUCTIONS",
+    "codex_internal_context",
+    "permissions instructions",
+    "turn_aborted",
+    "subagent_notification",
+  ]),
+  headings: [{ prefix: "# AGENTS.md instructions for ", name: "AGENTS.md" }],
+};
+
+/** `session_meta.source` is a string (`cli`, `vscode`, `exec`) or `{subagent: {...}}`. */
+function codexSourceLabel(source: unknown): string | undefined {
+  if (typeof source === "string" && source.length > 0) return source;
+  const record = asRecord(source);
+  const key = record === undefined ? undefined : Object.keys(record)[0];
+  return key;
+}
+
+interface CodexProvenance {
+  /** `provenance.type` per content item: `user`, `harness`, `agents_md`, `tool`. */
+  types: string[];
+  /** True only when every item's provenance says `hook: true`. */
+  allHook: boolean;
+  kinds: string[];
+}
+
+function codexProvenance(payload: Record<string, unknown>): CodexProvenance | undefined {
+  const passthrough = asRecord(payload["internal_chat_message_metadata_passthrough"]);
+  if (passthrough === undefined) return undefined;
+  const items = Array.isArray(passthrough["content_item_metadata"]) ? passthrough["content_item_metadata"] : [];
+  const provenances = items.map((item) => asRecord(asRecord(item)?.["provenance"])).filter((p) => p !== undefined);
+  const kinds = Array.isArray(passthrough["content_item_kinds"])
+    ? passthrough["content_item_kinds"].filter((kind): kind is string => typeof kind === "string")
+    : [];
+  return {
+    types: provenances.map((p) => p["type"]).filter((type): type is string => typeof type === "string"),
+    allHook: provenances.length > 0 && provenances.every((p) => p["hook"] === true),
+    kinds,
+  };
+}
+
+function codexInputOrigin(
+  payload: Record<string, unknown>,
+  role: unknown,
+  parts: readonly ContentPart[],
+  state: CodexReducerState,
+  sourceOrdinal: number,
+): MessageOrigin | "pending" {
+  const envelope = wholeEnvelope(parts, CODEX_ENVELOPES);
+  const withEnvelope = (origin: MessageOrigin): MessageOrigin =>
+    envelope === undefined ? origin : { ...origin, envelope };
+  const provenance = codexProvenance(payload);
+  if (role === "developer" || role === "system") {
+    return provenance?.allHook
+      ? withEnvelope({ kind: "hook", evidence: `codex:role=${role},provenance.hook` })
+      : withEnvelope({ kind: "harness", evidence: `codex:role=${role}` });
+  }
+  if (provenance !== undefined && provenance.types.length > 0 && !provenance.types.includes("user")) {
+    if (provenance.kinds.includes("multi_agent.subagent_notification")) {
+      return withEnvelope({ kind: "task-notification", evidence: "codex:content_item_kinds=multi_agent.subagent_notification" });
+    }
+    if (provenance.allHook) return withEnvelope({ kind: "hook", evidence: "codex:provenance.hook" });
+    return withEnvelope({ kind: "harness", evidence: `codex:provenance.type=${[...new Set(provenance.types)].join(",")}` });
+  }
+  if (provenance === undefined || provenance.types.length === 0) {
+    if (envelope === "subagent_notification") return { kind: "task-notification", evidence: "codex:envelope", envelope };
+    if (envelope !== undefined) return { kind: "harness", evidence: "codex:envelope", envelope };
+    if (provenance !== undefined && provenance.kinds.length > 0 && provenance.kinds.every((kind) => kind === "unknown")) {
+      return { kind: "unknown", evidence: "codex:content_item_kinds=unknown" };
+    }
+  }
+  // Submitted through the user-input path: who submitted it depends on the
+  // session that owns this record.
+  const inherited = state.historyStartOrdinal !== undefined && sourceOrdinal < state.historyStartOrdinal;
+  if (inherited) return withEnvelope(codexSourceOrigin(state.latestMetaSource, ",forked-parent-history"));
+  if (!state.sessionMetaSeen) return "pending";
+  return withEnvelope(codexSourceOrigin(state.sessionSource, ""));
+}
+
+function codexSourceOrigin(source: string | undefined, suffix: string): MessageOrigin {
+  if (source === undefined) return { kind: "unknown", evidence: `codex:no-session-source${suffix}` };
+  const evidence = `codex:session_meta.source=${source}${suffix}`;
+  if (source === "subagent") return { kind: "agent", evidence };
+  if (source === "cli") return { kind: "human", evidence };
+  return { kind: "unknown", evidence };
+}
+
+/**
+ * Resolves user-path origins that were read before this session's
+ * session_meta. With no session_meta (yet), the source is unknown.
+ */
+function applyPendingCodexOrigins(state: CodexReducerState, messages: Message[]): void {
+  for (const index of state.pendingOriginIndices ?? []) {
+    const message = messages[index];
+    if (message?.role !== "user") continue;
+    const origin = codexSourceOrigin(state.sessionSource, "");
+    const envelope = wholeEnvelope(message.content, CODEX_ENVELOPES);
+    message.origin = envelope === undefined ? origin : { ...origin, envelope };
+  }
+}
+
+function resolvePendingCodexOrigins(state: CodexReducerState): void {
+  applyPendingCodexOrigins(state, state.messages);
+  state.pendingOriginIndices = [];
+}
+
 /** Adds only source-recorded session correlation; never infers a turn by adjacency. */
 function reconcileCodexResultCorrelations(state: CodexReducerState): void {
   if (state.observedSessionId === undefined) return;
@@ -499,6 +678,7 @@ function codexImporter(
       // A session id resolves all accumulated state messages together.
       reconcileCodexStateMessageIds(snapshot);
       reconcileCodexResultCorrelations(snapshot);
+      if (snapshot.sessionMetaSeen) resolvePendingCodexOrigins(snapshot);
       if (!snapshot.sessionId) return [];
       const announcements = snapshot.messages.slice(snapshot.announcedMessageCount ?? 0);
       snapshot.announcedMessageCount = snapshot.messages.length;
@@ -511,6 +691,7 @@ function codexImporter(
       snapshot.sessionId ??= "codex-session";
       reconcileCodexStateMessageIds(snapshot);
       reconcileCodexResultCorrelations(snapshot);
+      resolvePendingCodexOrigins(snapshot);
       const announcements = snapshot.messages.slice(snapshot.announcedMessageCount ?? 0);
       snapshot.announcedMessageCount = snapshot.messages.length;
       return announcements;

@@ -15,6 +15,19 @@
  *   by default; with `includeSidechains: true` they are kept interleaved and
  *   tagged `metadata.sidechain: true`.
  * - `isMeta` user events (injected context, not user speech) are skipped.
+ * - User-role messages carry a derived `origin` (see `claudeUserOrigin`).
+ *   `isCompactSummary` wins, then `promptSource: "suggestion_accepted"`
+ *   (model-written text a person accepted: unknown), then the record's own
+ *   `origin.kind` (but `human` only when `promptSource` is absent, `typed`,
+ *   or `queued`; Claude Code also stamps `human` on SDK-submitted prompts),
+ *   then a message that is entirely harness wrapper blocks, then
+ *   `promptSource` typed or queued, then `isSidechain` (a subagent's "user"
+ *   is its parent agent).
+ *   `turnOrigin` is deliberately ignored: it describes the turn, and records
+ *   inside a human turn (local command output, for example) inherit it.
+ *   Anything else, including SDK-submitted prompts, is `unknown`: an SDK
+ *   client may relay a person's typing or an orchestrator's brief, and the
+ *   record does not say which.
  * - The `toolUseResult` sidecar (structured duplicate of tool_result content,
  *   often containing whole files) is not imported.
  * - Result identity is derived from the observed session, event UUID (or
@@ -42,12 +55,15 @@ import type {
   ContentPart,
   ImagePart,
   Message,
+  MessageOrigin,
+  MessageOriginKind,
   Thread,
   ThreadMetadata,
   ToolResult,
 } from "@kontourai/thread";
 import { FinishReason, THREAD_SCHEMA_VERSION } from "@kontourai/thread";
 import { deterministicToolResultId, parseTimestamp, toLines, type JsonlInput } from "./shared.js";
+import { wholeEnvelope, type EnvelopeVocabulary } from "./origin.js";
 import type { MessageIdentityObservationSink } from "../answer.js";
 
 const ConversationEvent = z
@@ -99,6 +115,11 @@ const ConversationEvent = z
     gitBranch: z.string().optional(),
     isSidechain: z.boolean().optional(),
     isMeta: z.boolean().optional(),
+    isCompactSummary: z.boolean().optional(),
+    // Read defensively during origin derivation; an unexpected shape must
+    // not reject the whole conversation event.
+    origin: z.unknown().optional(),
+    promptSource: z.unknown().optional(),
   })
   .passthrough();
 
@@ -284,6 +305,7 @@ function stepClaude(event: ConversationEvent, state: ClaudeReducerState, recordO
           role: "user",
           timestamp,
           content,
+          origin: claudeUserOrigin(event, content),
           ...(event.isSidechain ? { metadata: { sidechain: true } } : {}),
         }, toolResults.length === 0 && event.uuid !== undefined);
       }
@@ -511,6 +533,89 @@ export function importFromClaudeCode(
     sourceThreadWasObserved && observed.has(index) ? "observed" : "adapter-fallback",
   );
   return thread;
+}
+
+/** Harness wrappers whose whole-text presence decides the origin by itself. */
+const CLAUDE_HARNESS_TAGS = [
+  "system-reminder",
+  "local-command-caveat",
+  "local-command-stdout",
+  "local-command-stderr",
+  "bash-stdout",
+  "bash-stderr",
+] as const;
+/**
+ * Wrappers around a command a person (or an SDK client) invoked: the envelope
+ * is reported, but who invoked it is left to the record's own signals.
+ */
+const CLAUDE_COMMAND_TAGS = ["command-name", "command-message", "command-args", "bash-input"] as const;
+const CLAUDE_ENVELOPES: EnvelopeVocabulary = {
+  tags: new Set<string>([...CLAUDE_HARNESS_TAGS, ...CLAUDE_COMMAND_TAGS, "task-notification"]),
+  markers: new Map([
+    ["[Request interrupted by user]", "request-interrupted"],
+    ["[Request interrupted by user for tool use]", "request-interrupted"],
+  ]),
+};
+
+/** Claude Code's own `origin.kind` values, as observed in real transcripts. */
+const CLAUDE_ORIGIN_KINDS: Readonly<Record<string, MessageOriginKind>> = {
+  human: "human",
+  "task-notification": "task-notification",
+  // Another Claude session's message, and a coordinator's instruction to a
+  // worker: both are an agent speaking in the user role.
+  peer: "agent",
+  coordinator: "agent",
+  "auto-continuation": "harness",
+};
+/**
+ * `promptSource` values that mean a person wrote the prompt in the
+ * interactive composer. `suggestion_accepted` is excluded: the model wrote
+ * that text and a person only accepted it.
+ */
+const CLAUDE_TYPED_PROMPT_SOURCES = new Set(["typed", "queued"]);
+
+function claudeUserOrigin(event: ConversationEvent, content: readonly ContentPart[]): MessageOrigin {
+  const envelope = wholeEnvelope(content, CLAUDE_ENVELOPES);
+  const withEnvelope = (origin: MessageOrigin): MessageOrigin =>
+    envelope === undefined ? origin : { ...origin, envelope };
+  if (event.isCompactSummary === true) {
+    return withEnvelope({ kind: "compaction", evidence: "claude-code:isCompactSummary" });
+  }
+  const promptSource = typeof event.promptSource === "string" ? event.promptSource : undefined;
+  if (promptSource === "suggestion_accepted") {
+    return withEnvelope({ kind: "unknown", evidence: "claude-code:promptSource=suggestion_accepted" });
+  }
+  const sourceKind = typeof event.origin === "object" && event.origin !== null
+    ? (event.origin as Record<string, unknown>)["kind"]
+    : undefined;
+  const mapped = typeof sourceKind === "string" ? CLAUDE_ORIGIN_KINDS[sourceKind] : undefined;
+  // Claude Code stamps origin.kind "human" on SDK-submitted prompts too
+  // (observed with promptSource "sdk", including machine-written briefs), so
+  // the harness's human label is trusted only for composer input.
+  const humanLabelTrusted = promptSource === undefined || CLAUDE_TYPED_PROMPT_SOURCES.has(promptSource);
+  if (mapped !== undefined && (mapped !== "human" || humanLabelTrusted)) {
+    return withEnvelope({ kind: mapped, evidence: `claude-code:origin.kind=${sourceKind}` });
+  }
+  if (envelope === "task-notification") {
+    return { kind: "task-notification", evidence: "claude-code:envelope", envelope };
+  }
+  if (envelope !== undefined && !(CLAUDE_COMMAND_TAGS as readonly string[]).includes(envelope)) {
+    return { kind: "harness", evidence: "claude-code:envelope", envelope };
+  }
+  if (promptSource !== undefined && CLAUDE_TYPED_PROMPT_SOURCES.has(promptSource)) {
+    return withEnvelope({ kind: "human", evidence: `claude-code:promptSource=${promptSource}` });
+  }
+  if (event.isSidechain === true) {
+    return withEnvelope({ kind: "agent", evidence: "claude-code:isSidechain" });
+  }
+  // An unrecognized or "unclassified" origin.kind, an SDK prompt, or no
+  // signal at all: say so rather than guessing human.
+  const evidence = typeof sourceKind === "string"
+    ? `claude-code:origin.kind=${sourceKind}${promptSource !== undefined ? `,promptSource=${promptSource}` : ""}`
+    : promptSource !== undefined
+      ? `claude-code:promptSource=${promptSource}`
+      : "claude-code:no-origin-signal";
+  return withEnvelope({ kind: "unknown", evidence });
 }
 
 function assistantUsageExtras(

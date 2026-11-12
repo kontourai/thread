@@ -11,8 +11,8 @@ describe the source fields and the retained fixture evidence.
 
 | `--from` | Source | Important limits |
 | --- | --- | --- |
-| `claude-code` | Session JSONL | Skips bookkeeping, `isMeta`, and sidechains by default. Merges split assistant records by API message ID, which can change strict event order. Skips the large `toolUseResult` sidecar. |
-| `codex` | Rollout JSONL (`response_item`, `event_msg`, metadata) | Folds assistant items per turn; skips tool-search items and encrypted reasoning. Adjacent mirrored assistant text is deduplicated. Tool output has unknown terminal standing. |
+| `claude-code` | Session JSONL | Skips bookkeeping, `isMeta`, and sidechains by default. Merges split assistant records by API message ID, which can change strict event order. Skips the large `toolUseResult` sidecar. Derives user-message `origin`. |
+| `codex` | Rollout JSONL (`response_item`, `event_msg`, metadata) | Folds assistant items per turn; skips tool-search items and encrypted reasoning. Adjacent mirrored assistant text is deduplicated. Tool output has unknown terminal standing. `developer` items become `system` messages; inter-agent `agent_message` items become agent-authored `user` messages. Derives `origin`. |
 | `opencode` | `opencode export` JSON with `info` and message `parts` | Splits embedded tool parts into calls/results; skips structural markers. Only observed `completed` tool status maps to success. |
 | `kiro` | CLI JSONL (`Prompt`, `AssistantMessage`, `ToolResults`) | Skips compaction snapshots. Reads no session sidecar; callers supply session ID (the CLI uses the filename stem). Assistant/tool times inherit the preceding prompt. |
 | `pi` | Session JSONL (`session`, `message`) | Uses append order rather than rewalking parent links. Settings records are skipped; non-text tool results become placeholders. |
@@ -62,6 +62,43 @@ The default limit is 100 per run; set `maxMalformed` to a nonnegative integer
 to change it. Above the limit, the call throws and returns nothing; raise the limit to accept
 the counted omissions. Errors contain no source content. Input and output may
 be sensitive; callers must protect them.
+
+## Message origin
+
+Claude Code and Codex derive [`origin`](contracts.md#message-origin) on user
+and system messages from source signals only. Other importers leave it
+absent.
+
+Claude Code checks, in order: `isCompactSummary` (compaction);
+`promptSource: "suggestion_accepted"` (`unknown`: the model wrote the text and
+a person accepted it); the record's own `origin.kind` (`human`,
+`task-notification`, `peer` and `coordinator` as agent, `auto-continuation` as
+harness), where `human` counts only when `promptSource` is absent, `typed`, or
+`queued`, because Claude Code also stamps `human` on SDK-submitted prompts;
+text that is entirely harness wrapper blocks (`<system-reminder>`,
+`<local-command-stdout>`, `<task-notification>`, `[Request interrupted by
+user]`, and similar, in every text part); `promptSource` of `typed` or
+`queued` (human); and `isSidechain` (agent, since a subagent's user is its
+parent). Anything else is `unknown`, including SDK-submitted prompts, because
+an SDK client can relay a person or an orchestrator. `turnOrigin` is not used: it describes the whole turn, and
+records inside a human turn, such as local command output, inherit it.
+Slash-command wrappers (`<command-name>`, `<bash-input>`) report an envelope
+but no author. `isMeta` records stay skipped.
+
+Codex maps `developer` and `system` items to `system` messages with origin
+`harness` (or `hook` when the item's provenance says so). For a user item, the
+rollout's `internal_chat_message_metadata_passthrough` provenance decides
+first: harness, AGENTS.md, tool, and skills provenance mean `harness` (`hook`
+when flagged, `task-notification` for subagent notifications). Without
+provenance, text that is entirely wrapper blocks (`<environment_context>`,
+the AGENTS.md heading with `<INSTRUCTIONS>`, `<subagent_notification>`, and
+similar) decides. What remains came through the user-input path, so the
+session's `session_meta.source` decides: `subagent` is `agent`, the
+interactive `cli` is `human`, and other clients (`vscode`, `exec`, app-server)
+are `unknown`. In a forked subagent rollout, records before
+`subagent_history_start_ordinal` are the parent's history and use the
+parent's source. Codex has no compaction-summary user record, so it never
+emits `compaction`.
 
 ## Identity and usage losses
 

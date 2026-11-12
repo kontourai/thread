@@ -10,7 +10,7 @@
 
 import { z } from "zod";
 
-export const THREAD_SCHEMA_VERSION = "1.2.0";
+export const THREAD_SCHEMA_VERSION = "1.3.0";
 export const SCHEMA_NAME = "@kontourai/thread";
 
 // ---------------------------------------------------------------------------
@@ -335,10 +335,63 @@ const BaseMessage = {
   metadata: z.record(z.string(), z.unknown()).optional(),
 };
 
+// ---------------------------------------------------------------------------
+// Message origin (who authored a user- or system-role turn)
+// ---------------------------------------------------------------------------
+
+/**
+ * Who authored a `user`- or `system`-role message. Coding-agent harnesses put
+ * a lot in the user role that no person typed: injected context, task
+ * notifications, compaction summaries, and prompts one agent wrote for
+ * another. Importers derive this from source-format signals only.
+ *
+ * - `human`: the source positively records a person submitted it.
+ * - `agent`: another agent wrote it (a subagent's brief or a peer/coordinator
+ *   message): the "user" is an agent.
+ * - `harness`: the harness injected it (context, instructions, environment,
+ *   system tags, local command output, developer-role instructions).
+ * - `hook`: a configured hook injected it.
+ * - `compaction`: a context-compaction or continuation summary.
+ * - `task-notification`: a background task or subagent completion notice.
+ * - `unknown`: the importer looked, and the source cannot tell. Never read
+ *   this as human.
+ *
+ * An absent `origin` means no importer derived one (an older Thread, or an
+ * adapter that does not compute it), which is different from `unknown`.
+ */
+export const MessageOriginKind = z.enum([
+  "human",
+  "agent",
+  "harness",
+  "hook",
+  "compaction",
+  "task-notification",
+  "unknown",
+]);
+export type MessageOriginKind = z.infer<typeof MessageOriginKind>;
+
+export const MessageOrigin = z.object({
+  kind: MessageOriginKind,
+  /**
+   * The source signal the kind was derived from, for audit, such as
+   * `claude-code:origin.kind=human` or `codex:role=developer`. Informational:
+   * consumers branch on `kind`, not on this string.
+   */
+  evidence: z.string().min(1).optional(),
+  /**
+   * Set only when the message's entire text is one or more harness wrapper
+   * blocks: the leading wrapper's name, such as `system-reminder`. A message
+   * that starts with a wrapper but also carries other text has no envelope.
+   */
+  envelope: z.string().min(1).optional(),
+});
+export type MessageOrigin = z.infer<typeof MessageOrigin>;
+
 export const UserMessage = z.object({
   ...BaseMessage,
   role: z.literal("user"),
   content: z.array(ContentPart),
+  origin: MessageOrigin.optional(),
 });
 export type UserMessage = z.infer<typeof UserMessage>;
 
@@ -375,7 +428,7 @@ export type AssistantMessage = z.infer<typeof AssistantMessage>;
 export const SystemMessage = z.object({
   ...BaseMessage,
   role: z.literal("system"),
-  content: z.array(ContentPart),
+  content: z.array(ContentPart),  origin: MessageOrigin.optional(),
 });
 export type SystemMessage = z.infer<typeof SystemMessage>;
 

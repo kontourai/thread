@@ -8,6 +8,7 @@ import {
   MAX_SAFE_ASSISTANT_ANSWER_PART_TYPE_CODE_UNITS,
   SafeAssistantAnswerProjection,
   THREAD_ANSWER_REF_AUTHORITY,
+  THREAD_ANSWER_REF_SCHEMA_VERSION,
   ThreadAnswerRef,
   createObservedMessageIdentity,
   createThreadAnswerRef,
@@ -33,13 +34,17 @@ describe("ThreadAnswerRef", () => {
   it("requires exact owner-issued fields and makes thread scope part of identity", () => {
     expect(ref).toEqual({
       authority: "@kontourai/thread",
-      schemaVersion: THREAD_SCHEMA_VERSION,
+      // Pinned literal: the ref wire version is independent of the Thread
+      // schema version, so persisted refs survive Thread schema bumps.
+      schemaVersion: "1.2.0",
       kind: "assistant-message",
       standing: "observed",
       threadId: "thread-1",
       messageId: "message-1",
     });
     expect(THREAD_ANSWER_REF_AUTHORITY).toBe("@kontourai/thread");
+    expect(THREAD_ANSWER_REF_SCHEMA_VERSION).toBe("1.2.0");
+    expect(THREAD_SCHEMA_VERSION).not.toBe(THREAD_ANSWER_REF_SCHEMA_VERSION);
     expect(threadAnswerRefKey(ref)).not.toBe(threadAnswerRefKey(createThreadAnswerRef(createObservedMessageIdentity("thread-2", "message-1"))));
     expect(parseThreadAnswerRef(ref)).toEqual(ref);
     expect(isThreadAnswerRef(ref)).toBe(true);

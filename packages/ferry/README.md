@@ -70,6 +70,15 @@ single-quoted and backtick variants (1,009 / 3,472) and two `apply_patch`
 payloads, one of which contains `tools.map(` in its diffed source because
 that shape defeated an earlier gate.
 
+Origin fixture provenance: `claude-code-provenance.jsonl`,
+`claude-code-subagent.jsonl`, `codex-root-provenance.jsonl`, and
+`codex-forked-subagent-provenance.jsonl` are real local records with keys,
+nesting, key order, booleans, numbers, and enumerated values kept as written.
+Every free-text value, id, path, branch, and timestamp is synthetic, and
+wrapper tags around injected text keep synthetic bodies. The forked subagent
+fixture keeps one rollout's real `ordinal` values; the Claude provenance and
+Codex root fixtures are composed from several sessions.
+
 Tool-result identity is deterministic and namespaced (`ferry:<adapter>:sha256:…`),
 computed only from source record anchors and a source result index. It never
 uses a call id, output text, timestamp, or prose-derived result status. Claude

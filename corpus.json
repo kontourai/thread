@@ -43,6 +43,7 @@
     { "id": "cli", "title": "Ferry commands and exit behavior", "source": "docs/cli.md" },
     { "id": "formats", "title": "Supported formats and fidelity limits", "source": "docs/formats.md" },
     { "id": "schema", "title": "Canonical schema and compatibility", "source": "docs/contracts.md#schema-and-serialization" },
+    { "id": "origin", "title": "Who authored a user-role message", "source": "docs/contracts.md#message-origin" },
     { "id": "identity", "title": "Tool-result and assistant-answer identity", "source": "docs/contracts.md#identity-and-projections" },
     { "id": "usage", "title": "Token usage and tool-call analysis", "source": "docs/cli.md#usage-and-rows" },
     { "id": "contributing", "title": "Verification and documentation ownership", "source": "docs/contributing.md" }

@@ -14,6 +14,7 @@ import {
   isToolMessage,
   isUserMessage,
   Message,
+  MessageOrigin,
   projectToolResult,
   SafeToolResultProjection,
   Thread,
@@ -59,6 +60,44 @@ describe("message schemas", () => {
     expect(() =>
       Message.parse({ id: "", threadId: "t", role: "user", timestamp: 1, content: [] }),
     ).toThrow();
+  });
+});
+
+describe("message origin", () => {
+  const base = { id: "m", threadId: "t", timestamp: 1, content: [{ type: "text" as const, text: "x" }] };
+
+  it("survives serialization on user and system messages", () => {
+    const thread = createThread([
+      { ...base, id: "u", role: "user", origin: { kind: "human", evidence: "test:typed" } },
+      {
+        ...base,
+        id: "s",
+        role: "system",
+        origin: { kind: "harness", evidence: "test:developer", envelope: "permissions instructions" },
+      },
+      { ...base, id: "u2", role: "user", origin: { kind: "unknown" } },
+    ]);
+    const back = threadFromJson(threadToJson(thread));
+    // Zod strips undeclared keys, so this fails if `origin` leaves the schema.
+    expect(back.messages.map((m) => ("origin" in m ? m.origin : undefined))).toEqual([
+      { kind: "human", evidence: "test:typed" },
+      { kind: "harness", evidence: "test:developer", envelope: "permissions instructions" },
+      { kind: "unknown" },
+    ]);
+  });
+
+  it("keeps origin optional so pre-1.3.0 threads still parse", () => {
+    expect(Message.parse({ ...base, role: "user" })).not.toHaveProperty("origin");
+  });
+
+  it("rejects kinds nothing derives and empty labels", () => {
+    expect(() => MessageOrigin.parse({ kind: "maybe-human" })).toThrow();
+    expect(() => MessageOrigin.parse({ kind: "harness", envelope: "" })).toThrow();
+    expect(() => MessageOrigin.parse({ kind: "harness", evidence: "" })).toThrow();
+  });
+
+  it("is declared at schema 1.3.0", () => {
+    expect(THREAD_SCHEMA_VERSION).toBe("1.3.0");
   });
 });
 
