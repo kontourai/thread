@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.8.0](https://github.com/kontourai/thread/compare/ferry-v0.7.0...ferry-v0.8.0) (2026-11-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* **ferry:** Codex `developer` items are imported as `system` messages instead of `user` messages, and Codex `response_item` `agent_message` items (previously dropped) are imported as `user` messages with `origin.kind: "agent"`. Consumers that treat every user-role message as human input must filter on `origin`. Claude Code and Codex user and system messages now carry `origin`.
+
+### Features
+
+* **ferry:** stream large files, count import losses, and import Claude Code subagent transcripts ([#92](https://github.com/kontourai/thread/issues/92)) ([ef47002](https://github.com/kontourai/thread/commit/ef470024031da17b7a2a3b9ea30faff1b0822887)), closes [#35](https://github.com/kontourai/thread/issues/35)
+* **ferry:** typed message origin for human vs harness- and agent-authored turns ([#76](https://github.com/kontourai/thread/issues/76), [#78](https://github.com/kontourai/thread/issues/78)) ([#91](https://github.com/kontourai/thread/issues/91)) ([060e285](https://github.com/kontourai/thread/commit/060e2850f927507eba1055a6e73321d120767ac7))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @kontourai/thread bumped to 0.7.0
+
 ## [0.7.0](https://github.com/kontourai/thread/compare/ferry-v0.6.0...ferry-v0.7.0) (2026-11-05)
 
 

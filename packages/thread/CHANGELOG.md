@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.7.0](https://github.com/kontourai/thread/compare/thread-v0.6.0...thread-v0.7.0) (2026-11-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* **ferry:** Codex `developer` items are imported as `system` messages instead of `user` messages, and Codex `response_item` `agent_message` items (previously dropped) are imported as `user` messages with `origin.kind: "agent"`. Consumers that treat every user-role message as human input must filter on `origin`. Claude Code and Codex user and system messages now carry `origin`.
+
+### Features
+
+* **ferry:** typed message origin for human vs harness- and agent-authored turns ([#76](https://github.com/kontourai/thread/issues/76), [#78](https://github.com/kontourai/thread/issues/78)) ([#91](https://github.com/kontourai/thread/issues/91)) ([060e285](https://github.com/kontourai/thread/commit/060e2850f927507eba1055a6e73321d120767ac7))
+
 ## [0.6.0](https://github.com/kontourai/thread/compare/thread-v0.5.0...thread-v0.6.0) (2026-11-05)
 
 
