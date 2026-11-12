@@ -4,7 +4,12 @@ Canonical Zod schema for AI conversations — messages, tool calls and results,
 reasoning, attachments, token usage — plus type guards, factories, and
 validated JSON serialization.
 
-Schema 1.2.0 also supports owner-issued tool-result identity. Legacy imported
+Schema 1.3.0 adds an optional `origin` on user and system messages that
+records who authored the turn: `human`, `agent`, `harness`, `hook`,
+`compaction`, `task-notification`, or `unknown`. An absent origin means no
+importer derived one; `unknown` means the source could not tell.
+
+Schema 1.2.0 added owner-issued tool-result identity. Legacy imported
 results remain valid, but only results carrying both `resultId` and
 `terminalStatus` can be safely retained for later dereference. Use
 `projectToolResult` when passing one to another consumer: it produces a
@@ -18,8 +23,9 @@ the mandatory omission counters on the projection.
 `ThreadAnswerRef` is an exact, portable identity for one owner-issued assistant
 message: `{ authority: "@kontourai/thread", schemaVersion: "1.2.0",
 kind: "assistant-message", standing: "observed", threadId, messageId }`. It is separate from the
-serialized Thread/Message schema, so this additive API does **not** change the
-Thread schema version or require Ferry adapters to invent source identities.
+serialized Thread/Message schema: its version is `THREAD_ANSWER_REF_SCHEMA_VERSION`,
+which stays `1.2.0` when the Thread schema version moves, and it does not
+require Ferry adapters to invent source identities.
 
 The producer creates `createObservedMessageIdentity(threadId, messageId)` only
 when it byte-observed the owner-issued tuple, then passes that fact to

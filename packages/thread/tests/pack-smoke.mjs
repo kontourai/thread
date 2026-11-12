@@ -52,7 +52,7 @@ const safe = SafeToolResultProjection.parse({ resultId: "result", name: "tool", 
 const outcome = projectToolResult(result);
 const answerRef = createThreadAnswerRef(createObservedMessageIdentity("thread", "message"));
 const answer = projectAssistantAnswer(answerRef, { id: "message", threadId: "thread", role: "assistant", timestamp: 1, content: [{ type: "text", text: "answer" }] });
-if (THREAD_SCHEMA_VERSION !== "1.2.0" || outcome.state !== "available" || safe.resultId !== "result" || answer.state !== "available" || answer.answer.content[0].text !== "answer") process.exit(1);
+if (THREAD_SCHEMA_VERSION !== "1.3.0" || answerRef.schemaVersion !== "1.2.0" || outcome.state !== "available" || safe.resultId !== "result" || answer.state !== "available" || answer.answer.content[0].text !== "answer") process.exit(1);
 `,
   );
   execFileSync(process.execPath, ["smoke.mjs"], { cwd: consumerDirectory, stdio: "inherit" });

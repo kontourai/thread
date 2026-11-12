@@ -12,10 +12,16 @@ import { z } from "zod";
 import {
   BoundedOpaqueId,
   SCHEMA_NAME,
-  THREAD_SCHEMA_VERSION,
 } from "./schema.js";
 
 export const THREAD_ANSWER_REF_AUTHORITY = SCHEMA_NAME;
+/**
+ * Version of the answer-reference and identity-observation wire shapes. It
+ * was minted equal to the Thread schema version (1.2.0) but is pinned
+ * separately: persisted references must keep parsing when the Thread
+ * message schema gains an unrelated field.
+ */
+export const THREAD_ANSWER_REF_SCHEMA_VERSION = "1.2.0";
 export const THREAD_ANSWER_REF_KIND = "assistant-message";
 export const MESSAGE_IDENTITY_OBSERVATION_KIND = "message-identity-observation";
 
@@ -28,7 +34,7 @@ export const MESSAGE_IDENTITY_OBSERVATION_KIND = "message-identity-observation";
  */
 const MessageIdentityObservationBase = {
   authority: z.literal(THREAD_ANSWER_REF_AUTHORITY),
-  schemaVersion: z.literal(THREAD_SCHEMA_VERSION),
+  schemaVersion: z.literal(THREAD_ANSWER_REF_SCHEMA_VERSION),
   kind: z.literal(MESSAGE_IDENTITY_OBSERVATION_KIND),
   threadId: BoundedOpaqueId,
   messageId: BoundedOpaqueId,
@@ -57,7 +63,7 @@ export const createObservedMessageIdentity = (
   messageId: string,
 ): ObservedMessageIdentity => ObservedMessageIdentity.parse({
   authority: THREAD_ANSWER_REF_AUTHORITY,
-  schemaVersion: THREAD_SCHEMA_VERSION,
+  schemaVersion: THREAD_ANSWER_REF_SCHEMA_VERSION,
   kind: MESSAGE_IDENTITY_OBSERVATION_KIND,
   standing: "observed",
   threadId,
@@ -71,7 +77,7 @@ export const createObservedMessageIdentity = (
 export const ThreadAnswerRef = z
   .object({
     authority: z.literal(THREAD_ANSWER_REF_AUTHORITY),
-    schemaVersion: z.literal(THREAD_SCHEMA_VERSION),
+    schemaVersion: z.literal(THREAD_ANSWER_REF_SCHEMA_VERSION),
     kind: z.literal(THREAD_ANSWER_REF_KIND),
     /** Only source-observed identity may cross into a dereferenceable ref. */
     standing: z.literal("observed"),
@@ -90,7 +96,7 @@ export const createThreadAnswerRef = (
 ): ThreadAnswerRef =>
   ThreadAnswerRef.parse({
     authority: THREAD_ANSWER_REF_AUTHORITY,
-    schemaVersion: THREAD_SCHEMA_VERSION,
+    schemaVersion: THREAD_ANSWER_REF_SCHEMA_VERSION,
     kind: THREAD_ANSWER_REF_KIND,
     standing: identity.standing,
     threadId: identity.threadId,
