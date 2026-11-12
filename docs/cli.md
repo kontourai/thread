@@ -19,6 +19,9 @@ describe prerequisites and conversion limits.
 All four file commands accept `-f, --from <format>` (default `auto`). Files
 must be named explicitly or expanded by your shell. There is no CLI flag
 for including Claude Code sidechains; that option belongs to the adapter API.
+Inputs go through `importThreadsFromFile`: JSONL files above 64 MiB are read
+line by line rather than as one string, so rollouts beyond V8's string limit
+import (see [large files](formats.md#large-files-and-counted-losses)).
 
 ## Conversion output
 
@@ -60,7 +63,8 @@ the last result if that ID repeats. Rows retain raw arguments, optional
 source-provided `parsedArguments`, and optional importer heuristics in
 `derived`. Result columns are absent for unpaired calls. Unknown standing
 does not become `isError: false`; `resultChars` counts text characters only.
-There is no sidechain column. CSV omits nested argument projections and
+There is no sidechain column: a Claude Code subagent transcript imports as
+its own thread whose `threadId` ends in `:agent-<agentId>`. CSV omits nested argument projections and
 emits cells verbatim, including formula-leading characters; prefer JSONL
 for untrusted data sent to a query engine.
 

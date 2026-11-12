@@ -29,8 +29,10 @@ carries npm's `workspaces` field, so `-w` no longer selects a package.
 - **Fidelity losses are declared** in each adapter's header comment and must
   stay accurate. An exporter that drops reasoning says so.
 - **Large-file path**: JSONL importers accept `string | readonly string[]`
-  because real rollouts exceed Node's max string length. Don't regress the
-  streaming path in the CLI.
+  because real rollouts exceed Node's max string length. Files go through
+  `importThreadsFromFile`, which streams large JSONL. Split JSONL with
+  `readJsonlLines`, never `node:readline` (it breaks at U+2028/U+2029 inside
+  JSON strings). Don't regress the streaming path in the CLI.
 - Schema changes are breaking for every adapter: update
   `THREAD_SCHEMA_VERSION` per semver and check each importer/exporter.
 
