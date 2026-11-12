@@ -7,11 +7,37 @@ conversations, runs tools, authorizes a consumer, or makes provider requests.
 
 ## Schema and serialization
 
-The current source declares `THREAD_SCHEMA_VERSION = "1.2.0"`; this is separate
+The current source declares `THREAD_SCHEMA_VERSION = "1.3.0"`; this is separate
 from the npm package version. A Thread contains an ID, ordered messages,
 created/updated epoch-millisecond timestamps, and optional source metadata.
 Roles are `user`, `assistant`, `system`, and `tool`. Content supports text,
 images/files, assistant reasoning and tool calls, and tool results.
+
+## Message origin
+
+Schema 1.3.0 adds an optional `origin` to `user` and `system` messages: who
+authored the turn, since coding-agent harnesses put a great deal in the user
+role that no person typed. `origin.kind` is one of:
+
+| Kind | Meaning |
+| --- | --- |
+| `human` | The source positively records that a person submitted it. |
+| `agent` | Another agent wrote it: a subagent's brief, or a peer, coordinator, or child agent's message. |
+| `harness` | The harness injected it: context, instructions, environment, wrapper tags, local command output, developer-role instructions. |
+| `hook` | A configured hook injected it. |
+| `compaction` | A context-compaction or continuation summary. |
+| `task-notification` | A background-task or subagent completion notice. |
+| `unknown` | The importer looked, and the source cannot tell. Never read this as human. |
+
+An absent `origin` means no importer derived one (an older Thread, or an
+adapter that does not compute it), which differs from `unknown`. `evidence`
+names the source signal the kind came from, for audit; consumers branch on
+`kind`. `envelope` is set only when the entire text is harness wrapper
+blocks, and names the leading wrapper. A message that starts with a wrapper
+and continues with other text has no envelope, and its kind comes from the
+record's other signals. Exporters ignore `origin`.
+[Formats and fidelity](formats.md#message-origin) lists which source signals
+each importer reads.
 
 `threadFromJson` parses JSON and validates through Zod; invalid JSON or schema
 violations throw. `threadToJson` validates first and supplies the current
@@ -47,7 +73,10 @@ unidentified results are unavailable; invalid input can fail validation, so
 validate at the caller boundary.
 
 A `ThreadAnswerRef` names one observed assistant-message tuple under authority
-`@kontourai/thread`, schema `1.2.0`, and kind `assistant-message`. IDs are
+`@kontourai/thread`, schema `1.2.0`, and kind `assistant-message`. That version
+is `THREAD_ANSWER_REF_SCHEMA_VERSION`, pinned separately from the Thread schema
+version so persisted references and observations keep parsing across Thread
+schema changes. IDs are
 opaque Unicode strings: path/URL-looking values are never normalized or
 dereferenced. `createObservedMessageIdentity` declares a producer observation;
 it cannot independently prove the producer's claim. Only a producer that read
