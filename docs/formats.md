@@ -69,15 +69,18 @@ Claude Code and Codex derive [`origin`](contracts.md#message-origin) on user
 and system messages from source signals only. Other importers leave it
 absent.
 
-Claude Code checks, in order: `isCompactSummary` (compaction); the record's
-own `origin.kind` (`human`, `task-notification`, `peer` and `coordinator` as
-agent, `auto-continuation` as harness); text that is entirely harness wrapper
-blocks (`<system-reminder>`, `<local-command-stdout>`, `<task-notification>`,
-`[Request interrupted by user]`, and similar); `promptSource` of `typed`,
-`queued`, or `suggestion_accepted` (human); and `isSidechain` (agent, since a
-subagent's user is its parent). Anything else is `unknown`, including
-SDK-submitted prompts, because an SDK client can relay a person or an
-orchestrator. `turnOrigin` is not used: it describes the whole turn, and
+Claude Code checks, in order: `isCompactSummary` (compaction);
+`promptSource: "suggestion_accepted"` (`unknown`: the model wrote the text and
+a person accepted it); the record's own `origin.kind` (`human`,
+`task-notification`, `peer` and `coordinator` as agent, `auto-continuation` as
+harness), where `human` counts only when `promptSource` is absent, `typed`, or
+`queued`, because Claude Code also stamps `human` on SDK-submitted prompts;
+text that is entirely harness wrapper blocks (`<system-reminder>`,
+`<local-command-stdout>`, `<task-notification>`, `[Request interrupted by
+user]`, and similar, in every text part); `promptSource` of `typed` or
+`queued` (human); and `isSidechain` (agent, since a subagent's user is its
+parent). Anything else is `unknown`, including SDK-submitted prompts, because
+an SDK client can relay a person or an orchestrator. `turnOrigin` is not used: it describes the whole turn, and
 records inside a human turn, such as local command output, inherit it.
 Slash-command wrappers (`<command-name>`, `<bash-input>`) report an envelope
 but no author. `isMeta` records stay skipped.
