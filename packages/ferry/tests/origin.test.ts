@@ -49,11 +49,17 @@ describe("claude-code message origin", () => {
       // record does not say which.
       ["user", "Act as the reviewer for this change. Repo",
         { kind: "unknown", evidence: "claude-code:promptSource=sdk" }],
-      // The same SDK path with the harness's own human classification.
+      // Regression: Claude Code also stamps origin.kind "human" on
+      // SDK-submitted prompts (76 such records locally, some plainly machine
+      // written), so that label is not trusted on the SDK path.
       ["user", "Thanks. Please also add a regression test",
-        { kind: "human", evidence: "claude-code:origin.kind=human" }],
+        { kind: "unknown", evidence: "claude-code:origin.kind=human,promptSource=sdk" }],
       ["user", "[Request interrupted by user]",
         { kind: "harness", evidence: "claude-code:envelope", envelope: "request-interrupted" }],
+      // Model-written suggestion a person accepted: not their words, even
+      // though the record says origin.kind "human".
+      ["user", "Run the test suite again",
+        { kind: "unknown", evidence: "claude-code:promptSource=suggestion_accepted" }],
     ]);
   });
 
@@ -72,6 +78,39 @@ describe("claude-code message origin", () => {
   it("survives canonical serialization", () => {
     const back = threadFromJson(threadToJson(thread));
     expect(origins(back.messages)).toEqual(origins(thread.messages));
+  });
+
+  describe("signal precedence", () => {
+    const record = (fields: Record<string, unknown>) => JSON.stringify({
+      type: "user", isSidechain: false, sessionId: "s", uuid: "u", timestamp: "2026-08-01T10:00:00.000Z", ...fields,
+    });
+    const originOf = (fields: Record<string, unknown>) => {
+      const message = importFromClaudeCode([record(fields)]).messages[0];
+      return message?.role === "user" ? message.origin : undefined;
+    };
+
+    it("trusts origin.kind human only for composer input", () => {
+      const message = { role: "user", content: "x" };
+      expect(originOf({ message, origin: { kind: "human" }, promptSource: "typed" }))
+        .toEqual({ kind: "human", evidence: "claude-code:origin.kind=human" });
+      expect(originOf({ message, origin: { kind: "human" } }))
+        .toEqual({ kind: "human", evidence: "claude-code:origin.kind=human" });
+      expect(originOf({ message, origin: { kind: "human" }, promptSource: "system" }))
+        .toEqual({ kind: "unknown", evidence: "claude-code:origin.kind=human,promptSource=system" });
+    });
+
+    it("puts a whole-message harness wrapper ahead of promptSource typed", () => {
+      expect(originOf({ message: { role: "user", content: "<local-command-stdout>ok</local-command-stdout>" }, promptSource: "typed" }))
+        .toEqual({ kind: "harness", evidence: "claude-code:envelope", envelope: "local-command-stdout" });
+    });
+
+    it("treats a multi-part message as an envelope only when every part is a wrapper", () => {
+      const wrapper = { type: "text", text: "<system-reminder>context</system-reminder>" };
+      expect(originOf({ message: { role: "user", content: [wrapper, { type: "text", text: "real prompt" }] }, promptSource: "typed" }))
+        .toEqual({ kind: "human", evidence: "claude-code:promptSource=typed" });
+      expect(originOf({ message: { role: "user", content: [wrapper, { type: "text", text: "<local-command-caveat>c</local-command-caveat>" }] } }))
+        .toEqual({ kind: "harness", evidence: "claude-code:envelope", envelope: "system-reminder" });
+    });
   });
 
   it("prefers the record's origin.kind over promptSource and isSidechain", () => {
