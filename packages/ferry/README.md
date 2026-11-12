@@ -40,10 +40,11 @@ file that simply contains no conversation (a sessions directory holds
 non-transcript sidecars) is reported but is not a skip — it is a normal
 outcome, not a failure.
 
-There is no `sidechain` column: in current Claude Code versions subagent
-traffic lives in separate transcript files rather than inline sidechain
-lines, so such a column would be permanently false. It returns when an
-importer reads those files.
+There is no `sidechain` column. In current Claude Code versions subagent
+traffic lives in separate transcript files (`<session>/subagents/agent-*.jsonl`)
+rather than inline sidechain lines. Each such file imports as its own thread
+whose `threadId` ends in `:agent-<agentId>`, so `threadId` already tells
+subagent rows apart.
 
 `--csv` cells are emitted verbatim, including a leading `=`, `+`, `-` or `@`,
 which a spreadsheet may interpret as a formula. That is deliberate — escaping

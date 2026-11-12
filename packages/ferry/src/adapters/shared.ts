@@ -2,6 +2,25 @@
 
 import { createHash } from "node:crypto";
 
+/**
+ * A typed, counted import loss: source content the importer could not turn
+ * into messages. `unparseable-line` is a non-blank line that is not valid
+ * JSON; `unrecognized-record` is a record of a conversation type that failed
+ * the importer's schema.
+ */
+export interface ImportLoss {
+  format: string;
+  kind: "unparseable-line" | "unrecognized-record";
+  count: number;
+}
+
+export function importLosses(format: string, unparseable: number, unrecognized: number): ImportLoss[] {
+  return [
+    ...(unparseable > 0 ? [{ format, kind: "unparseable-line" as const, count: unparseable }] : []),
+    ...(unrecognized > 0 ? [{ format, kind: "unrecognized-record" as const, count: unrecognized }] : []),
+  ];
+}
+
 /** JSONL input, either a whole document or pre-split lines (for files too large for one string). */
 export type JsonlInput = string | readonly string[];
 
