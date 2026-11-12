@@ -11,7 +11,7 @@ describe the source fields and the retained fixture evidence.
 
 | `--from` | Source | Important limits |
 | --- | --- | --- |
-| `claude-code` | Session JSONL | Skips bookkeeping, `isMeta`, and sidechains by default. Merges split assistant records by API message ID, which can change strict event order. Skips the large `toolUseResult` sidecar. Derives user-message `origin`. |
+| `claude-code` | Session JSONL | Skips bookkeeping, `isMeta`, and inline sidechains by default; imports a subagent transcript file as its own agent thread. Merges split assistant records by API message ID, which can change strict event order. Skips the large `toolUseResult` sidecar. Derives user-message `origin`. |
 | `codex` | Rollout JSONL (`response_item`, `event_msg`, metadata) | Folds assistant items per turn; skips tool-search items and encrypted reasoning. Adjacent mirrored assistant text is deduplicated. Tool output has unknown terminal standing. `developer` items become `system` messages; inter-agent `agent_message` items become agent-authored `user` messages. Derives `origin`. |
 | `opencode` | `opencode export` JSON with `info` and message `parts` | Splits embedded tool parts into calls/results; skips structural markers. Only observed `completed` tool status maps to success. |
 | `kiro` | CLI JSONL (`Prompt`, `AssistantMessage`, `ToolResults`) | Skips compaction snapshots. Reads no session sidecar; callers supply session ID (the CLI uses the filename stem). Assistant/tool times inherit the preceding prompt. |
@@ -23,6 +23,42 @@ describe the source fields and the retained fixture evidence.
 Malformed/skipped JSONL records are reported through supported adapters'
 `onWarn` callbacks. The CLI sends these warnings to stderr. Detection inspects
 content and a bounded JSONL prefix; pass `--from` for unidentified inputs.
+
+### Large files and counted losses
+
+`importThreadsFromFile(path, format, options)` is the file-level bulk path.
+At or below `streamThresholdBytes` (default 64 MiB) it reads the file and
+calls `importThreadsWithIdentityObservations`. Above it, no whole-file
+string is built for a JSONL format: Claude Code and Codex stream through
+their incremental importers in batches, and Kiro, Pi, and observed tool
+events are read as a line array. A single-document JSON format is read whole
+only below V8's string limit; past it, `FerryInputTooLargeError` is thrown
+before reading. The result reports `read: "whole" | "streamed"` and the
+resolved `format`.
+
+`readJsonlLines` splits only on `\n`. Node's `readline` also breaks lines at
+U+2028 and U+2029, which JSON allows inside strings, and so cut real Codex
+records in two; that was the source of "unparseable" lines seen when tailing
+very large rollouts.
+
+Claude Code and Codex report lines they cannot import as typed, counted
+losses: `{ format, kind: "unparseable-line" | "unrecognized-record", count }`.
+They arrive in `ImportResult.losses`, an adapter's `onLosses` callback, an
+incremental importer's `losses()`, and the thread's
+`metadata.custom.ferryImportLosses`. Other adapters still report skips only
+through `onWarn`.
+
+### Claude Code subagent transcripts
+
+When a file's first conversation record is a sidechain record with an
+`agentId`, the file is a subagent transcript and its records are imported
+without `includeSidechains`. Those records carry the parent's `sessionId`,
+so the thread id is `<sessionId>:agent-<agentId>` and
+`metadata.custom.claudeSubagent` holds `{ agentId, parentSessionId }`. The
+composed thread id makes message identities adapter-fallback. Sidechain
+messages carry `metadata.agentId`, and their user turns have origin `agent`.
+The sibling `agent-<id>.meta.json` (agent type, spawning tool call) is not
+read.
 
 ### Incremental JSONL import
 

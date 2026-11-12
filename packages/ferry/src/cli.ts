@@ -3,8 +3,7 @@
  * ferry — migrate AI conversations between tools.
  */
 
-import { createReadStream, readFileSync, statSync, writeFileSync } from "node:fs";
-import { createInterface } from "node:readline";
+import { readFileSync, writeFileSync } from "node:fs";
 import { resolve, extname } from "node:path";
 import { Command } from "commander";
 import {
@@ -15,12 +14,12 @@ import {
 } from "@kontourai/thread";
 import {
   exportThread,
-  importThreads,
   INPUT_FORMATS,
   OUTPUT_FORMATS,
   type OutputFormat,
 } from "./convert.js";
-import { detectFormat, type InputFormat } from "./detect.js";
+import type { InputFormat } from "./detect.js";
+import { FerryFormatDetectionError, importThreadsFromFile, type ImportFileResult } from "./read.js";
 import {
   csvHeader,
   formatRowCsv,
@@ -55,79 +54,45 @@ function sessionIdFrom(file: string): string {
   return base.replace(/\.[^.]+$/, "");
 }
 
-function resolveInputFormat(
-  file: string,
-  content: string | readonly string[],
-  requested: string,
-): InputFormat {
-  if (requested !== "auto") {
-    if (!(INPUT_FORMATS as readonly string[]).includes(requested)) {
-      fail(`unknown input format "${requested}" (expected: ${INPUT_FORMATS.join(", ")})`);
-    }
-    return requested as InputFormat;
-  }
-  const sample = typeof content === "string" ? content : content.slice(0, 20).join("\n");
-  const detected = detectFormat(sample);
-  if (!detected) {
-    fail(`could not detect the format of ${file}; pass --from <format>`);
-  }
-  return detected;
-}
+/** A CLI failure whose message is already phrased for the user. */
+class CliInputError extends Error {}
 
 /**
- * Files beyond Node's max string length (~512MB) can't be read in one go;
- * JSONL inputs stream line-by-line instead (importers accept line arrays).
+ * Imports one input file, THROWING on failure, so `rows` (which must survive
+ * a bad file) can catch it while the other verbs exit through `fail`.
+ *
+ * Reading goes through `importThreadsFromFile`: large JSONL inputs stream
+ * line by line (split on `\n` only) instead of becoming one string, which
+ * V8 cannot hold past ~512 Mi characters.
  */
-const STREAM_THRESHOLD = 256 * 1024 * 1024;
-
-/** The single read implementation; wrappers decide whether failure exits or throws. */
-async function readFileContent(file: string): Promise<string | string[]> {
-  const path = resolve(file);
-  if (statSync(path).size > STREAM_THRESHOLD) {
-    const lines: string[] = [];
-    const reader = createInterface({
-      input: createReadStream(path, "utf-8"),
-      crlfDelay: Number.POSITIVE_INFINITY,
-    });
-    for await (const line of reader) lines.push(line);
-    return lines;
+async function importFile(file: string, requested: string): Promise<ImportFileResult> {
+  if (requested !== "auto" && !(INPUT_FORMATS as readonly string[]).includes(requested)) {
+    throw new CliInputError(`unknown input format "${requested}" (expected: ${INPUT_FORMATS.join(", ")})`);
   }
-  return readFileSync(path, "utf-8");
-}
-
-async function readInput(file: string): Promise<string | string[]> {
+  const format = requested as InputFormat | "auto";
   try {
-    return await readFileContent(file);
+    return await importThreadsFromFile(resolve(file), format, {
+      onWarn: warn,
+      sessionId: sessionIdFrom(file),
+    });
   } catch (error) {
-    fail(`cannot read ${file}: ${error instanceof Error ? error.message : String(error)}`);
+    if (error instanceof FerryFormatDetectionError) {
+      throw new CliInputError(`could not detect the format of ${file}; pass --from <format>`);
+    }
+    const code = (error as { code?: unknown }).code;
+    const message = error instanceof Error ? error.message : String(error);
+    if (typeof code === "string" && /^E[A-Z]+$/.test(code)) throw new CliInputError(`cannot read ${file}: ${message}`);
+    throw new CliInputError(`${file}: ${message}`, { cause: error });
   }
 }
 
-/**
- * Resolve a format, THROWING on failure. `resolveInputFormat` calls `fail`,
- * which is `process.exit` and therefore uncatchable — so `rows` (which must
- * survive a bad file) has to detect through this instead. Missing this half
- * meant a zero-byte or foreign file still killed the whole run: the one bad
- * input class the original skip path handled was a MISSING file, because
- * only that one throws from `statSync`.
- */
-function resolveInputFormatOrThrow(
-  file: string,
-  content: string | string[],
-  requested: string,
-): InputFormat {
-  if (requested !== "auto") {
-    if (!INPUT_FORMATS.includes(requested as InputFormat)) {
-      throw new Error(`unknown input format: ${requested}`);
-    }
-    return requested as InputFormat;
+/** `importFile` for verbs where any failure ends the run. */
+async function importFileOrFail(file: string, requested: string): Promise<ImportFileResult> {
+  try {
+    return await importFile(file, requested);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
   }
-  const sample = typeof content === "string" ? content : content.slice(0, 20).join("\n");
-  const detected = detectFormat(sample);
-  if (!detected) {
-    throw new Error(`could not detect the format of ${file}; pass --from <format>`);
-  }
-  return detected;
 }
 
 /** thread-2.json for the second thread of a multi-thread input. */
@@ -194,14 +159,7 @@ program
     }
 
     for (const file of inputs) {
-      const content = await readInput(file);
-      const from = resolveInputFormat(file, content, options.from);
-      let threads;
-      try {
-        threads = importThreads(content, from, { onWarn: warn, sessionId: sessionIdFrom(file) });
-      } catch (error) {
-        fail(`${file}: ${error instanceof Error ? error.message : String(error)}`);
-      }
+      const { threads } = await importFileOrFail(file, options.from);
       if (threads.length === 0) {
         fail(`${file}: no conversations found`);
       }
@@ -228,14 +186,7 @@ program
   .argument("<input>", "input file")
   .option("-f, --from <format>", `input format (auto, ${INPUT_FORMATS.join(", ")})`, "auto")
   .action(async (input: string, options: { from: string }) => {
-    const content = await readInput(input);
-    const from = resolveInputFormat(input, content, options.from);
-    let threads;
-    try {
-      threads = importThreads(content, from, { onWarn: warn, sessionId: sessionIdFrom(input) });
-    } catch (error) {
-      fail(`${input}: ${error instanceof Error ? error.message : String(error)}`);
-    }
+    const { threads, format: from } = await importFileOrFail(input, options.from);
     if (threads.length === 0) fail(`${input}: no conversations found`);
 
     threads.forEach((thread, index) => {
@@ -305,17 +256,8 @@ program
         since,
       });
       for (const file of inputs) {
-        const content = await readInput(file);
-        const from = resolveInputFormat(file, content, options.from);
-        try {
-          for (const thread of importThreads(content, from, {
-            onWarn: warn,
-            sessionId: sessionIdFrom(file),
-          })) {
-            accumulator.add(thread);
-          }
-        } catch (error) {
-          fail(`${file}: ${error instanceof Error ? error.message : String(error)}`);
+        for (const thread of (await importFileOrFail(file, options.from)).threads) {
+          accumulator.add(thread);
         }
       }
       const buckets = accumulator.result();
@@ -345,12 +287,7 @@ program
     let notConversations = 0;
     for (const file of inputs) {
       try {
-        const content = await readFileContent(file);
-        const from = resolveInputFormatOrThrow(file, content, options.from);
-        for (const thread of importThreads(content, from, {
-          onWarn: warn,
-          sessionId: sessionIdFrom(file),
-        })) {
+        for (const thread of (await importFile(file, options.from)).threads) {
           for (const row of toolCallRows(thread)) {
             if (since !== undefined && row.timestamp < since) continue;
             console.log(options.csv ? formatRowCsv(row) : formatRowJsonl(row));
@@ -371,7 +308,8 @@ program
           continue;
         }
         skipped += 1;
-        warn(`${file}: ${message}`);
+        // importFile already names the file in its own messages.
+        warn(message.includes(file) ? message : `${file}: ${message}`);
       }
     }
     if (notConversations > 0) {

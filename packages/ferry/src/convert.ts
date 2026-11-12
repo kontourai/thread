@@ -25,6 +25,7 @@ import { exportToGemini, extractSystemInstruction } from "./adapters/gemini.js";
 import { exportToMarkdown } from "./adapters/markdown.js";
 import { exportToOpenAIChat } from "./adapters/openai-chat.js";
 import type { InputFormat } from "./detect.js";
+import type { ImportLoss } from "./adapters/shared.js";
 
 export const INPUT_FORMATS: readonly InputFormat[] = [
   "claude-code",
@@ -57,6 +58,12 @@ export interface ImportOptions {
 export interface ImportResult {
   threads: Thread[];
   messageIdentityObservations: MessageIdentityObservation[];
+  /**
+   * Typed, counted source losses (lines or records that could not be
+   * imported). Reported by the Claude Code and Codex importers; other
+   * adapters still report skips only through `onWarn`.
+   */
+  losses: ImportLoss[];
 }
 
 export function importThreads(
@@ -83,14 +90,16 @@ export function importThreadsWithIdentityObservations(
   const onMessageIdentity: MessageIdentityObservationSink = (message, standing) => {
     raw.push(ferryMessageIdentityObservationFromStanding(message, standing));
   };
+  const losses: ImportLoss[] = [];
+  const onLosses = (reported: ImportLoss[]): void => { losses.push(...reported); };
   let threads: Thread[];
   switch (format) {
     case "observed-tool-events":
       throw new Error("This file is a tool-event log, not a conversation. Use importObservations from @kontourai/ferry in code.");
     case "claude-code":
-      threads = [importFromClaudeCode(content, { onWarn, onMessageIdentity })]; break;
+      threads = [importFromClaudeCode(content, { onWarn, onMessageIdentity, onLosses })]; break;
     case "codex":
-      threads = [importFromCodex(content, { onWarn, onMessageIdentity })]; break;
+      threads = [importFromCodex(content, { onWarn, onMessageIdentity, onLosses })]; break;
     case "opencode":
       threads = [importFromOpenCode(requireString(content, format), { onMessageIdentity })]; break;
     case "kiro":
@@ -106,7 +115,7 @@ export function importThreadsWithIdentityObservations(
       for (const thread of threads) for (const message of thread.messages) onMessageIdentity(message, "adapter-fallback");
       break;
   }
-  return { threads, messageIdentityObservations: normalizeMessageIdentityObservations(raw) };
+  return { threads, messageIdentityObservations: normalizeMessageIdentityObservations(raw), losses };
 }
 
 function requireString(content: string | readonly string[], format: InputFormat): string {

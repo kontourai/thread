@@ -11,4 +11,13 @@ export {
   type OutputFormat,
 } from "./convert.js";
 export * from "./rows.js";
+export {
+  DEFAULT_STREAM_THRESHOLD_BYTES,
+  FerryFormatDetectionError,
+  FerryInputTooLargeError,
+  importThreadsFromFile,
+  readJsonlLines,
+  type ImportFileOptions,
+  type ImportFileResult,
+} from "./read.js";
 export * from "./answer.js";

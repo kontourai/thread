@@ -92,7 +92,16 @@ import type {
   TokenUsage,
 } from "@kontourai/thread";
 import { THREAD_SCHEMA_VERSION } from "@kontourai/thread";
-import { asRecord, deterministicToolResultId, parseTimestamp, toLines, tryParseJson, type JsonlInput } from "./shared.js";
+import {
+  asRecord,
+  deterministicToolResultId,
+  importLosses,
+  parseTimestamp,
+  toLines,
+  tryParseJson,
+  type ImportLoss,
+  type JsonlInput,
+} from "./shared.js";
 import { wholeEnvelope, type EnvelopeVocabulary } from "./origin.js";
 import type { MessageIdentityObservationSink } from "../answer.js";
 
@@ -112,6 +121,8 @@ export interface CodexImportOptions {
   /** Called with a summary of skipped/unparseable records, if any. */
   onWarn?: (message: string) => void;
   onMessageIdentity?: MessageIdentityObservationSink;
+  /** Called once per import with the typed, counted losses (only when there are any). */
+  onLosses?: (losses: ImportLoss[]) => void;
 }
 
 interface CodexReducerState {
@@ -130,7 +141,12 @@ interface CodexReducerState {
   /** Only an actual turn_context.turn_id may correlate a result to a turn. */
   currentTurnId?: string;
   importableItemCount: number;
+  /** Total of the two loss counters below. */
   skippedLines: number;
+  /** Non-blank lines that were not valid JSON. */
+  unparseableLines?: number;
+  /** JSON lines that are not rollout records (`{type, payload}`). */
+  unrecognizedRecords?: number;
   pending: { content: AssistantContent[]; timestamp: number; model?: string } | null;
   heldTokenCount?: TokenCount;
   previousTokenCountMessageIndex?: number;
@@ -198,12 +214,14 @@ function codexThread(state: CodexReducerState): Thread {
   }
   if (messages.length === 0) throw new Error("Codex input contained no importable messages");
   const threadId = state.sessionId ?? "codex-session";
+  const losses = codexLosses(state);
   return {
     schemaVersion: THREAD_SCHEMA_VERSION, id: threadId, messages,
     metadata: { source: "codex", sourceVersion: state.cliVersion, cwd: state.cwd,
-      ...(state.lastRateLimits || unattributedUsage ? { custom: {
+      ...(state.lastRateLimits || unattributedUsage || losses.length > 0 ? { custom: {
         ...(state.lastRateLimits ? { codexRateLimits: state.lastRateLimits } : {}),
         ...(unattributedUsage ? { codexUnattributedUsage: unattributedUsage } : {}),
+        ...(losses.length > 0 ? { ferryImportLosses: losses } : {}),
       } } : {}) },
     createdAt: messages[0]!.timestamp, updatedAt: messages[messages.length - 1]!.timestamp,
   };
@@ -635,6 +653,12 @@ export interface CodexIncrementalImporter {
   finalize(): Message[];
   state(): CodexImporterState;
   thread(): Thread;
+  /** Typed, counted losses so far (lines or records that could not be imported). */
+  losses(): ImportLoss[];
+}
+
+function codexLosses(state: CodexReducerState): ImportLoss[] {
+  return importLosses("codex", state.unparseableLines ?? 0, state.unrecognizedRecords ?? 0);
 }
 
 export function createCodexImporter(
@@ -662,18 +686,25 @@ function codexImporter(
   return {
     pushLines(lines) {
       if (lines.length === 0) return [];
-      let skipped = 0;
+      let unparseable = 0;
+      let unrecognized = 0;
       for (const line of lines) {
         if (!line.trim()) continue;
         let raw: unknown;
-        try { raw = JSON.parse(line); } catch { skipped += 1; continue; }
+        try { raw = JSON.parse(line); } catch { unparseable += 1; continue; }
         const parsed = RolloutLine.safeParse(raw);
-        if (!parsed.success) { skipped += 1; continue; }
+        if (!parsed.success) { unrecognized += 1; continue; }
         const recordOrdinal = (snapshot.recordOrdinal ?? 0) + 1;
         snapshot.recordOrdinal = recordOrdinal;
         stepCodex(parsed.data, snapshot, recordOrdinal);
       }
-      if (skipped > 0) onWarn?.(`codex: skipped ${skipped} unparseable line(s)`);
+      const skipped = unparseable + unrecognized;
+      if (skipped > 0) {
+        snapshot.unparseableLines = (snapshot.unparseableLines ?? 0) + unparseable;
+        snapshot.unrecognizedRecords = (snapshot.unrecognizedRecords ?? 0) + unrecognized;
+        snapshot.skippedLines += skipped;
+        onWarn?.(`codex: skipped ${skipped} unparseable line(s)`);
+      }
       // Do not give a tailing host an id based on the provisional fallback.
       // A session id resolves all accumulated state messages together.
       reconcileCodexStateMessageIds(snapshot);
@@ -698,6 +729,7 @@ function codexImporter(
     },
     state: () => structuredClone(snapshot),
     thread: current,
+    losses: () => codexLosses(snapshot),
   };
 }
 
@@ -708,11 +740,36 @@ export function importFromCodex(
 ): Thread {
   const importer = createCodexImporter(options);
   importer.pushLines(toLines(jsonlContent));
+  return finishCodexImport(importer, options);
+}
+
+/**
+ * Streams JSONL lines (for example from `readJsonlLines`) through the same
+ * incremental core in bounded batches, so no whole-file string is built.
+ */
+export async function importFromCodexLines(
+  lines: AsyncIterable<string> | Iterable<string>,
+  options: CodexImportOptions & { batchLines?: number } = {},
+): Promise<Thread> {
+  const importer = createCodexImporter(options);
+  const batchLines = options.batchLines ?? 1000;
+  let batch: string[] = [];
+  for await (const line of lines) {
+    batch.push(line);
+    if (batch.length >= batchLines) { importer.pushLines(batch); batch = []; }
+  }
+  importer.pushLines(batch);
+  return finishCodexImport(importer, options);
+}
+
+function finishCodexImport(importer: CodexIncrementalImporter, options: CodexImportOptions): Thread {
   importer.finalize();
   const thread = importer.thread();
   // Codex folds source records into generated canonical messages. A source
   // payload id is not the emitted message tuple.
   for (const message of thread.messages) options.onMessageIdentity?.(message, "adapter-fallback");
+  const losses = importer.losses();
+  if (losses.length > 0) options.onLosses?.(losses);
   return thread;
 }
 

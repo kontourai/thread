@@ -11,9 +11,18 @@
  * signature}`, `{type:"image", source:{media_type, data}}`.
  *
  * Known limitations (deliberate):
- * - Sidechain events (subagent transcripts, `isSidechain: true`) are skipped
- *   by default; with `includeSidechains: true` they are kept interleaved and
- *   tagged `metadata.sidechain: true`.
+ * - Inline sidechain events (`isSidechain: true` inside a main session) are
+ *   skipped by default; with `includeSidechains: true` they are kept
+ *   interleaved and tagged `metadata.sidechain: true` plus `metadata.agentId`.
+ * - A subagent transcript (`<session>/subagents/agent-<id>.jsonl`, where the
+ *   first conversation record is a sidechain record carrying `agentId`) is
+ *   the subagent's own conversation, so its records are imported without
+ *   `includeSidechains`. Its records carry the PARENT's `sessionId`, so the
+ *   thread id is `<sessionId>:agent-<agentId>` (an adapter-composed id, so
+ *   message identities are adapter-fallback) and
+ *   `metadata.custom.claudeSubagent` holds `{agentId, parentSessionId}`. The
+ *   sibling `agent-<id>.meta.json` (agent type, spawning tool call) is not
+ *   read: importers see only the transcript.
  * - `isMeta` user events (injected context, not user speech) are skipped.
  * - User-role messages carry a derived `origin` (see `claudeUserOrigin`).
  *   `isCompactSummary` wins, then `promptSource: "suggestion_accepted"`
@@ -37,8 +46,11 @@
  * - Pricing and deduplication usage extras are retained in
  *   `metadata.claudeUsageExtras`; other provider-specific usage fields (such
  *   as `inference_geo`, `iterations`, and `speed`) are dropped.
- * Records that fail to parse are skipped and counted; pass `onWarn` to hear
- * about them instead of losing data silently.
+ * Records that fail to parse are skipped and counted as typed losses
+ * (`unparseable-line` for invalid JSON, `unrecognized-record` for a
+ * user/assistant record that fails the schema), reported through `onWarn`,
+ * `onLosses`, the importer's `losses()`, and the thread's
+ * `metadata.custom.ferryImportLosses`.
  *
  * Chronology tradeoff: split assistant lines sharing one API message id are
  * merged into a single message even when other events (tool results, user
@@ -62,7 +74,14 @@ import type {
   ToolResult,
 } from "@kontourai/thread";
 import { FinishReason, THREAD_SCHEMA_VERSION } from "@kontourai/thread";
-import { deterministicToolResultId, parseTimestamp, toLines, type JsonlInput } from "./shared.js";
+import {
+  deterministicToolResultId,
+  importLosses,
+  parseTimestamp,
+  toLines,
+  type ImportLoss,
+  type JsonlInput,
+} from "./shared.js";
 import { wholeEnvelope, type EnvelopeVocabulary } from "./origin.js";
 import type { MessageIdentityObservationSink } from "../answer.js";
 
@@ -116,6 +135,7 @@ const ConversationEvent = z
     isSidechain: z.boolean().optional(),
     isMeta: z.boolean().optional(),
     isCompactSummary: z.boolean().optional(),
+    agentId: z.string().optional(),
     // Read defensively during origin derivation; an unexpected shape must
     // not reject the whole conversation event.
     origin: z.unknown().optional(),
@@ -138,6 +158,8 @@ export interface ClaudeCodeImportOptions {
   /** Called with a summary of skipped/unparseable records, if any. */
   onWarn?: (message: string) => void;
   onMessageIdentity?: MessageIdentityObservationSink;
+  /** Called once per import with the typed, counted losses (only when there are any). */
+  onLosses?: (losses: ImportLoss[]) => void;
 }
 
 function imagePartFromSource(source: unknown): ImagePart | null {
@@ -184,7 +206,16 @@ interface ClaudeReducerState {
   /** Every non-blank source record, before filters; checkpointed for stable anchors. */
   recordOrdinal: number;
   eventCount: number;
+  /** Total of the two loss counters below. */
   skippedLines: number;
+  /** Non-blank lines that were not valid JSON. */
+  unparseableLines?: number;
+  /** user/assistant records that failed the conversation-event schema. */
+  unrecognizedRecords?: number;
+  /** Set when the first conversation record decides whether this file is a subagent transcript. */
+  firstEventSeen?: boolean;
+  /** The subagent's id when this file is a subagent transcript. */
+  subagentAgentId?: string;
   sessionId?: string;
   cwd?: string;
   version?: string;
@@ -210,22 +241,50 @@ const pushClaudeMessage = (
   if (messageIdWasObserved) (state.observedMessageIndices ??= []).push(state.messages.length - 1);
 };
 
+/**
+ * A subagent transcript reuses its parent's sessionId, so its thread id is
+ * composed to keep the two threads distinct.
+ */
+function claudeThreadId(state: ClaudeReducerState): string {
+  const sessionId = state.sessionId ?? "claude-code-session";
+  return state.subagentAgentId === undefined ? sessionId : `${sessionId}:agent-${state.subagentAgentId}`;
+}
+
+function claudeLosses(state: ClaudeReducerState): ImportLoss[] {
+  return importLosses("claude-code", state.unparseableLines ?? 0, state.unrecognizedRecords ?? 0);
+}
+
 function claudeThread(state: ClaudeReducerState): Thread {
   if (state.eventCount === 0) throw new Error("No Claude Code conversation events found in input");
   if (state.messages.length === 0) throw new Error("Claude Code input contained no importable messages");
   const messages = structuredClone(state.messages);
-  const threadId = state.sessionId ?? "claude-code-session";
+  const threadId = claudeThreadId(state);
+  const losses = claudeLosses(state);
+  const custom = {
+    ...(state.subagentAgentId !== undefined
+      ? { claudeSubagent: { agentId: state.subagentAgentId, ...(state.sessionId !== undefined ? { parentSessionId: state.sessionId } : {}) } }
+      : {}),
+    ...(losses.length > 0 ? { ferryImportLosses: losses } : {}),
+  };
   return {
     schemaVersion: THREAD_SCHEMA_VERSION, id: threadId, messages,
     metadata: { source: "claude-code", sourceVersion: state.version, cwd: state.cwd,
-      title: state.title, git: state.gitBranch ? { branch: state.gitBranch } : undefined },
+      title: state.title, git: state.gitBranch ? { branch: state.gitBranch } : undefined,
+      ...(Object.keys(custom).length > 0 ? { custom } : {}) },
     createdAt: messages[0]?.timestamp ?? Date.now(),
     updatedAt: messages[messages.length - 1]?.timestamp ?? Date.now(),
   };
 }
 
+/** Sidechain marker plus, when the record names it, the subagent's id (#35). */
+function sidechainMetadata(event: ConversationEvent): Record<string, unknown> | undefined {
+  if (!event.isSidechain) return undefined;
+  return { sidechain: true, ...(event.agentId !== undefined ? { agentId: event.agentId } : {}) };
+}
+
 function stepClaude(event: ConversationEvent, state: ClaudeReducerState, recordOrdinal: number): void {
-  const threadId = state.sessionId ?? "claude-code-session";
+  const threadId = claudeThreadId(state);
+  const sidechain = sidechainMetadata(event);
   const messages = state.messages;
   const nextId = (): string => `${threadId}:${++state.syntheticId}`;
   // One API assistant message is split across several JSONL lines sharing
@@ -292,7 +351,7 @@ function stepClaude(event: ConversationEvent, state: ClaudeReducerState, recordO
           role: "tool",
           timestamp,
           toolResults,
-          ...(event.isSidechain ? { metadata: { sidechain: true } } : {}),
+          ...(sidechain ? { metadata: sidechain } : {}),
         }, event.uuid !== undefined);
       }
       const content = contentPartsFromBlocks(apiMessage.content);
@@ -306,7 +365,7 @@ function stepClaude(event: ConversationEvent, state: ClaudeReducerState, recordO
           timestamp,
           content,
           origin: claudeUserOrigin(event, content),
-          ...(event.isSidechain ? { metadata: { sidechain: true } } : {}),
+          ...(sidechain ? { metadata: sidechain } : {}),
         }, toolResults.length === 0 && event.uuid !== undefined);
       }
       return;
@@ -393,10 +452,10 @@ function stepClaude(event: ConversationEvent, state: ClaudeReducerState, recordO
             }
           : undefined,
       finishReason: stopReason ? STOP_REASON_MAP[stopReason] : undefined,
-      ...((event.isSidechain || claudeUsageExtras)
+      ...((sidechain || claudeUsageExtras)
         ? {
             metadata: {
-              ...(event.isSidechain ? { sidechain: true } : {}),
+              ...(sidechain ?? {}),
               ...(claudeUsageExtras ? { claudeUsageExtras } : {}),
             },
           }
@@ -450,6 +509,8 @@ export interface IncrementalImporter<State> {
   finalize(): Message[];
   state(): State;
   thread(): Thread;
+  /** Typed, counted losses so far (lines or records that could not be imported). */
+  losses(): ImportLoss[];
 }
 
 export function createClaudeCodeImporter(
@@ -467,7 +528,12 @@ export function restoreClaudeCodeImporter(
   options: Pick<ClaudeCodeImportOptions, "onWarn"> = {},
 ): IncrementalImporter<ClaudeCodeImporterState> {
   if (state.format !== "claude-code") throw new Error("Invalid Claude Code importer state");
-  return claudeImporter(structuredClone(state), options.onWarn);
+  const restored = structuredClone(state);
+  // State saved before subagent detection existed has no firstEventSeen. If
+  // it already imported events, its first event was decided (as a main
+  // session), so a later sidechain record must not reclassify the file.
+  if (restored.firstEventSeen === undefined && restored.eventCount > 0) restored.firstEventSeen = true;
+  return claudeImporter(restored, options.onWarn);
 }
 
 function claudeImporter(
@@ -479,12 +545,13 @@ function claudeImporter(
     pushLines(lines) {
       if (lines.length === 0) return [];
       const start = snapshot.messages.length;
-      let skipped = 0;
+      let unparseable = 0;
+      let unrecognized = 0;
       for (const line of lines) {
         if (!line.trim()) continue;
         snapshot.recordOrdinal += 1;
         let raw: unknown;
-        try { raw = JSON.parse(line); } catch { skipped += 1; continue; }
+        try { raw = JSON.parse(line); } catch { unparseable += 1; continue; }
         if (typeof raw !== "object" || raw === null) continue;
         const record = raw as Record<string, unknown>;
         if (record["type"] === "ai-title" && typeof record["aiTitle"] === "string") {
@@ -495,11 +562,18 @@ function claudeImporter(
         }
         const parsed = ConversationEvent.safeParse(raw);
         if (!parsed.success) {
-          if (record["type"] === "user" || record["type"] === "assistant") skipped += 1;
+          if (record["type"] === "user" || record["type"] === "assistant") unrecognized += 1;
           continue;
         }
         const event = parsed.data;
-        if (event.isSidechain && !snapshot.includeSidechains) continue;
+        if (!snapshot.firstEventSeen) {
+          // The first conversation record decides: a subagent transcript
+          // opens with the subagent's own sidechain brief.
+          snapshot.firstEventSeen = true;
+          if (event.isSidechain === true && event.agentId !== undefined) snapshot.subagentAgentId = event.agentId;
+        }
+        const ownSubagentRecord = snapshot.subagentAgentId !== undefined && event.agentId === snapshot.subagentAgentId;
+        if (event.isSidechain && !snapshot.includeSidechains && !ownSubagentRecord) continue;
         if (event.isMeta) continue;
         snapshot.sessionId ??= event.sessionId;
         snapshot.cwd ??= event.cwd;
@@ -508,12 +582,19 @@ function claudeImporter(
         snapshot.eventCount += 1;
         stepClaude(event, snapshot, snapshot.recordOrdinal);
       }
-      if (skipped > 0) onWarn?.(`claude-code: skipped ${skipped} unparseable or unrecognized conversation line(s)`);
+      const skipped = unparseable + unrecognized;
+      if (skipped > 0) {
+        snapshot.unparseableLines = (snapshot.unparseableLines ?? 0) + unparseable;
+        snapshot.unrecognizedRecords = (snapshot.unrecognizedRecords ?? 0) + unrecognized;
+        snapshot.skippedLines += skipped;
+        onWarn?.(`claude-code: skipped ${skipped} unparseable or unrecognized conversation line(s)`);
+      }
       return snapshot.messages.slice(start);
     },
     finalize: () => [],
     state: () => structuredClone(snapshot),
     thread: current,
+    losses: () => claudeLosses(snapshot),
   };
 }
 
@@ -524,14 +605,46 @@ export function importFromClaudeCode(
 ): Thread {
   const importer = createClaudeCodeImporter(options);
   importer.pushLines(toLines(jsonlContent));
+  return finishClaudeImport(importer, options);
+}
+
+/**
+ * Streams JSONL lines (for example from `readJsonlLines`) through the same
+ * incremental core in bounded batches, so no whole-file string is built.
+ */
+export async function importFromClaudeCodeLines(
+  lines: AsyncIterable<string> | Iterable<string>,
+  options: ClaudeCodeImportOptions & { batchLines?: number } = {},
+): Promise<Thread> {
+  const importer = createClaudeCodeImporter(options);
+  const batchLines = options.batchLines ?? DEFAULT_BATCH_LINES;
+  let batch: string[] = [];
+  for await (const line of lines) {
+    batch.push(line);
+    if (batch.length >= batchLines) { importer.pushLines(batch); batch = []; }
+  }
+  importer.pushLines(batch);
+  return finishClaudeImport(importer, options);
+}
+
+const DEFAULT_BATCH_LINES = 1000;
+
+function finishClaudeImport(
+  importer: IncrementalImporter<ClaudeCodeImporterState>,
+  options: ClaudeCodeImportOptions,
+): Thread {
   importer.finalize();
   const thread = importer.thread();
-  const observed = new Set(importer.state().observedMessageIndices ?? []);
-  const sourceThreadWasObserved = importer.state().sessionId !== undefined;
+  const state = importer.state();
+  const observed = new Set(state.observedMessageIndices ?? []);
+  // A subagent transcript's thread id is composed, not owner-issued.
+  const sourceThreadWasObserved = state.sessionId !== undefined && state.subagentAgentId === undefined;
   for (const [index, message] of thread.messages.entries()) options.onMessageIdentity?.(
     message,
     sourceThreadWasObserved && observed.has(index) ? "observed" : "adapter-fallback",
   );
+  const losses = importer.losses();
+  if (losses.length > 0) options.onLosses?.(losses);
   return thread;
 }
 

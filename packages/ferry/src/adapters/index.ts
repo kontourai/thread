@@ -1,6 +1,8 @@
+export type { ImportLoss } from "./shared.js";
 export {
   createClaudeCodeImporter,
   importFromClaudeCode,
+  importFromClaudeCodeLines,
   restoreClaudeCodeImporter,
   type ClaudeCodeImportOptions,
   type ClaudeCodeImporterState,
@@ -9,6 +11,7 @@ export {
 export {
   createCodexImporter,
   importFromCodex,
+  importFromCodexLines,
   restoreCodexImporter,
   type CodexImportOptions,
   type CodexImporterState,

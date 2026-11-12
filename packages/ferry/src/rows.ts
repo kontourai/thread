@@ -52,8 +52,9 @@ export interface ToolCallRow {
 // zero sidechain messages, and a full-corpus run produced zero such rows. A
 // column whose name asserts a distinction nothing populates is the exact
 // label-vs-derivation defect this repo keeps finding — better absent than
-// permanently false. Reinstate it together with an importer that actually
-// reads those files.
+// permanently false. The importer now reads those files, but each subagent
+// transcript becomes its own thread whose id ends in `:agent-<agentId>`, so
+// `threadId` already carries the distinction and a column would duplicate it.
 
 function resultText(result: ToolResult): number {
   let total = 0;
