@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/kontourai/thread/compare/ferry-v0.8.0...ferry-v0.8.1) (2026-11-16)
+
+
+### Fixes
+
+* **deps:** bump commander from 15.0.0 to 15.1.0 ([#97](https://github.com/kontourai/thread/issues/97)) ([e57f05b](https://github.com/kontourai/thread/commit/e57f05bd2861cdecf5889b686b55e401f99ed8f2))
+
 ## [0.8.0](https://github.com/kontourai/thread/compare/ferry-v0.7.0...ferry-v0.8.0) (2026-11-12)
 
 
