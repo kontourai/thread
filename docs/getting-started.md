@@ -2,8 +2,8 @@
 
 ## Install
 
-Both packages require Node 22 or later and use ESM. Install the packages your
-application needs with its existing package manager:
+Thread requires Node 22 or later; Ferry requires Node 22.12 or later. Both use
+ESM. Install the packages your application needs with its existing package manager:
 
 ```sh
 pnpm add @kontourai/thread @kontourai/ferry
@@ -70,4 +70,6 @@ orders them. The root package is private; the two members publish separately.
 The development checks use Vitest 5, and the workspace explicitly approves the
 esbuild 0.28.2 platform-binary installer. These tools do not change the canonical
 Thread schema or Ferry's `workspace:^` dependency.
+Ferry uses Commander 15.1 for command-line parsing. The declared Ferry commands,
+option names and transcript formats are unchanged.
 Use the [contributor route](contributing.md) for verification and release ownership.
